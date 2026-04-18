@@ -22,6 +22,7 @@ IMAGE_HEADERS = {
 }
 
 def translate_text(text):
+    """Точный перевод китайских терминов (словарь)"""
     TRANSLATION_MAP = {
         '雪尼尔': 'шенилл', '亚麻': 'лён', '麻': 'лён', '超纤皮': 'микрофибра',
         '马鞍皮': 'седельная кожа', '皮': 'кожа', '布': 'ткань',
@@ -192,7 +193,7 @@ def run_parser(product_url, progress_callback=None):
         if video_url:
             txt += f"Видео: {video_url}\n"
 
-    # SEO-заголовок (ИСПРАВЛЕНО: рандомные итальянские названия)
+    # --- SEO-заголовок с рандомным итальянским названием ---
     base_seo_title = ""
     try:
         headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
@@ -200,7 +201,7 @@ def run_parser(product_url, progress_callback=None):
         prompt = f"""Создай короткий SEO-заголовок для карточки товара на русском языке длиной от 40 до 60 символов.
 Название товара: '{title}'.
 Правила:
-1. Если в названии уже есть модель (например, Pagase, Milano, Capri) — сохрани её.
+1. Если в названии уже есть модель — сохрани её.
 2. Если модели нет — придумай новое итальянское или английское название в стиле люкс (например: Bellagio, Venezia, Firenze, Capri, Portofino, Sorrento, Ravello, Amalfi, Como, Verona).
 3. Используй ключевые слова: дизайнерский, итальянский, люкс, премиум.
 4. Верни ТОЛЬКО готовый заголовок, без кавычек и пояснений."""
@@ -226,27 +227,53 @@ def run_parser(product_url, progress_callback=None):
         vid = cfg.get('Vid')
         price = vid_to_price.get(vid, 0)
 
+        # Извлекаем размеры из атрибутов
+        dimensions = []
+        for attr in all_attributes:
+            prop_name = attr.get('PropertyName', '').lower()
+            if any(k in prop_name for k in ['длина', 'ширина', 'высота', 'глубина', 'length', 'width', 'height', 'depth']):
+                val = attr.get('Value', '')
+                num_match = re.search(r'(\d+(\.\d+)?)', val)
+                if num_match:
+                    dimensions.append(num_match.group(1))
+
+        size_str = ""
+        if len(dimensions) >= 3:
+            size_str = f"{dimensions[0]}x{dimensions[1]}x{dimensions[2]} см"
+        elif len(dimensions) == 2:
+            size_str = f"{dimensions[0]}x{dimensions[1]} см"
+        elif len(dimensions) == 1:
+            size_str = f"{dimensions[0]} см"
+
+        # Точный перевод артикула
         readable_sku = ""
         try:
             rough_translation = translate_text(original_name)
-            prompt = f"""Опиши материал и цвет данного артикула мебели на русском языке.
-Исходный текст: '{original_name}'.
-Примерный перевод: '{rough_translation}'.
-Правила:
-1. НЕ УПОМИНАЙ, что это за предмет мебели (стул, кресло и т.д.).
-2. НЕ ПОВТОРЯЙ название бренда или модели (например, Pagase).
-3. Опиши ТОЛЬКО текстуру, материал и цвет (3-5 слов).
-4. Пиши с маленькой буквы.
-5. Если есть комбинация материалов, укажи их через запятую или "и".
-6. Верни ТОЛЬКО готовое описание, без кавычек и пояснений."""
-            payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 80}
-            response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
-            if response.status_code == 200:
-                readable_sku = response.json()["choices"][0]["message"]["content"].strip()
-            else:
+            
+            if rough_translation and rough_translation != original_name and not re.search(r'[\u4e00-\u9fff]', rough_translation):
                 readable_sku = rough_translation
+            else:
+                prompt = f"""Переведи точно на русский язык это описание материала и цвета мебели:
+'{original_name}'
+Правила:
+1. ТОЛЬКО ТОЧНЫЙ ПЕРЕВОД, ничего не добавляй и не убирай.
+2. Пиши с маленькой буквы.
+3. Верни ТОЛЬКО перевод."""
+                
+                payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 60}
+                response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
+                if response.status_code == 200:
+                    readable_sku = response.json()["choices"][0]["message"]["content"].strip()
+                else:
+                    readable_sku = original_name
         except:
             readable_sku = translate_text(original_name)
+            if not readable_sku or readable_sku == original_name:
+                readable_sku = original_name
+
+        # Добавляем размер к описанию
+        if size_str:
+            readable_sku = f"{readable_sku}, {size_str}"
 
         full_title = f"{base_seo_title}, {readable_sku}"
         if len(full_title) < 60:
