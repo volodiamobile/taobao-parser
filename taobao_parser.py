@@ -192,16 +192,20 @@ def run_parser(product_url, progress_callback=None):
         if video_url:
             txt += f"Видео: {video_url}\n"
 
-    # SEO-заголовок
+    # SEO-заголовок (ИСПРАВЛЕНО: рандомные итальянские названия)
     base_seo_title = ""
     try:
         headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-        has_model = any(word in title.lower() for word in ['pagase', 'model', 'модель'])
-        if has_model:
-            prompt = f"Создай короткий SEO-заголовок для карточки товара на русском языке длиной от 40 до 60 символов. Название товара: '{title}'. Сохрани название модели (например, Pagase). Используй ключевые слова: дизайнерский, итальянский, люкс."
-        else:
-            prompt = f"Создай короткий SEO-заголовок для карточки товара на русском языке длиной от 40 до 60 символов. Название товара: '{title}'. Придумай и добавь итальянское или английское название модели в стиле люкс (например, Milano, Venezia, Capri). Используй ключевые слова: дизайнерский, итальянский, люкс."
-        payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.7, "max_tokens": 100}
+        
+        prompt = f"""Создай короткий SEO-заголовок для карточки товара на русском языке длиной от 40 до 60 символов.
+Название товара: '{title}'.
+Правила:
+1. Если в названии уже есть модель (например, Pagase, Milano, Capri) — сохрани её.
+2. Если модели нет — придумай новое итальянское или английское название в стиле люкс (например: Bellagio, Venezia, Firenze, Capri, Portofino, Sorrento, Ravello, Amalfi, Como, Verona).
+3. Используй ключевые слова: дизайнерский, итальянский, люкс, премиум.
+4. Верни ТОЛЬКО готовый заголовок, без кавычек и пояснений."""
+        
+        payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.9, "max_tokens": 100}
         response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
         if response.status_code == 200:
             base_seo_title = response.json()["choices"][0]["message"]["content"].strip()
