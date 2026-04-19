@@ -214,24 +214,39 @@ def run_parser(product_url, progress_callback=None):
 
     log(f"📦 Название: {fixed_title[:50]}...")
 
+    # --- Проверяем акционную цену в Promotions ---
+    promotions = item.get("Promotions", [])
+    promo_price = None
+    if promotions:
+        promo_price = promotions[0].get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price")
+        if promo_price:
+            log(f"💰 Найдена акционная цена: {promo_price} ¥")
+
     # --- Настоящие артикулы из ConfiguredItems ---
     real_skus = []
     for cfg_item in configured_items:
         configurators = cfg_item.get("Configurators", [])
-        price_cny = cfg_item.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price", 0)
-        sku_id = cfg_item.get("Id", "")
         
+        # Используем акционную цену, если есть, иначе обычную
+        if promo_price is not None:
+            price_cny = promo_price
+        else:
+            price_cny = cfg_item.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price", 0)
+        
+        sku_id = cfg_item.get("Id", "")
         vids = [c.get("Vid") for c in configurators if c.get("Vid")]
         
-        # Находим соответствующие атрибуты
         sku_parts = []
         image_url = ""
         for vid in vids:
             for attr in all_attributes:
                 if attr.get("Vid") == vid:
                     val = attr.get('OriginalValue') or attr.get('Value') or ''
-                    if val and val not in ['-1', '-8', '-10', '-21', '-13', '-15', '-16', '-17', '-18', '-19', '-20']:
-                        sku_parts.append(val)
+                    if val and val not in ['-1', '-2', '-3', '-4', '-5', '-6', '-7', '-8']:
+                        # Убираем скобки 【】 и [] и их содержимое
+                        val = re.sub(r'[【\[].*?[】\]]', '', val).strip()
+                        if val:
+                            sku_parts.append(val)
                     if attr.get('ImageUrl') and not image_url:
                         image_url = attr.get('ImageUrl')
                     break
@@ -294,7 +309,7 @@ def run_parser(product_url, progress_callback=None):
         
         readable_sku = readable_sku + size_str
         
-        # ВАЖНО: НЕ дублируем название товара в артикуле!
+        # НЕ дублируем название товара в артикуле
         txt += f"{str(i).zfill(2)}. {readable_sku} — {price} ¥\n"
         
         if img_url and is_valid_image_url(img_url):
@@ -330,7 +345,7 @@ def run_parser(product_url, progress_callback=None):
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(txt)
 
-    # --- НОВОЕ: Сохраняем полный JSON-ответ от API ---
+    # --- Сохраняем полный JSON-ответ от API ---
     json_path = os.path.join(temp_dir, "api_response.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(product_data, f, indent=2, ensure_ascii=False)
