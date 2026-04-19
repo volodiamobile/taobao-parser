@@ -134,26 +134,6 @@ def detect_item_type(product_data, title, original_title):
     
     return ""
 
-def translate_with_deepseek(text, context, api_key):
-    """Переводит текст через DeepSeek"""
-    try:
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        prompt = f"""Переведи точно на русский язык:
-'{text}'
-Контекст: {context}
-Правила:
-1. ТОЛЬКО ТОЧНЫЙ ПЕРЕВОД, ничего не добавляй.
-2. Пиши с маленькой буквы.
-3. Верни ТОЛЬКО перевод."""
-        
-        payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 80}
-        response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
-        if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"].strip()
-    except:
-        pass
-    return text
-
 def run_parser(product_url, progress_callback=None):
     def log(msg):
         print(msg)
@@ -243,8 +223,8 @@ def run_parser(product_url, progress_callback=None):
                 if attr.get("Vid") == vid:
                     val = attr.get('OriginalValue') or attr.get('Value') or ''
                     if val and val not in ['-1', '-2', '-3', '-4', '-5', '-6', '-7', '-8']:
-                        # Убираем скобки 【】 и [] и их содержимое
-                        val = re.sub(r'[【\[].*?[】\]]', '', val).strip()
+                        # Убираем только скобки 【】 и [], оставляя содержимое
+                        val = re.sub(r'[【\[\]】]', '', val).strip()
                         if val:
                             sku_parts.append(val)
                     if attr.get('ImageUrl') and not image_url:
@@ -286,8 +266,25 @@ def run_parser(product_url, progress_callback=None):
         price = sku['price']
         img_url = sku['image_url']
         
-        # Перевод артикула
-        readable_sku = translate_with_deepseek(original_name, f"Характеристики {detected_type}", DEEPSEEK_API_KEY)
+        # Универсальный перевод артикула (без добавления лишних слов)
+        readable_sku = original_name
+        try:
+            headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+            prompt = f"""Переведи на русский язык это название артикула товара:
+'{original_name}'
+Правила:
+1. Переведи ВСЕ слова точно, ничего не пропускай.
+2. НЕ добавляй новых слов, которых нет в оригинале.
+3. Если есть модель (например, Pagase, Milano, CY2601) — сохрани её как есть.
+4. Пиши с маленькой буквы.
+5. Верни ТОЛЬКО перевод."""
+            
+            payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 60}
+            response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
+            if response.status_code == 200:
+                readable_sku = response.json()["choices"][0]["message"]["content"].strip()
+        except:
+            pass
         
         # Извлекаем размеры
         dimensions = []
