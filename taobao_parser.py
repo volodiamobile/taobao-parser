@@ -21,27 +21,6 @@ IMAGE_HEADERS = {
     "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
 }
 
-def translate_text(text):
-    """Точный перевод китайских терминов (словарь)"""
-    TRANSLATION_MAP = {
-        '雪尼尔': 'шенилл', '亚麻': 'лён', '麻': 'лён', '超纤皮': 'микрофибра',
-        '马鞍皮': 'седельная кожа', '皮': 'кожа', '布': 'ткань',
-        '不锈钢': 'нержавеющая сталь', '金属': 'металл',
-        '伯爵黄白': 'жёлто-белый', '黄白': 'жёлто-белый', '黄棕': 'жёлто-коричневый',
-        '棕黄': 'коричнево-жёлтый', '黑色': 'чёрный', '星空': 'звёздное небо',
-        '葡萄红': 'виноградно-красный', '奶杏白': 'молочно-абрикосовый',
-        '芬迪条纹': 'полосатый', '条纹': 'полосатый',
-        '定制': 'на заказ', '餐椅': 'обеденный стул', '可定色': 'цвет на выбор',
-    }
-    result = text
-    for ch, ru in TRANSLATION_MAP.items():
-        result = result.replace(ch, ru)
-    result = result.replace('+', ' ')
-    result = re.sub(r'[\u4e00-\u9fff]+', '', result)
-    result = re.sub(r'[^\w\s\-]', ' ', result)
-    result = re.sub(r'\s+', ' ', result).strip()
-    return result if result else text
-
 def extract_product_id(url):
     match = re.search(r'[?&]id=(\d+)', url)
     return match.group(1) if match else None
@@ -129,48 +108,51 @@ def process_image(url, filepath):
     except:
         return False
 
-def detect_item_type(item, title, original_title):
+def detect_item_type(product_data, title, original_title):
     """Определяет тип товара по категории API или ключевым словам"""
+    root_path = product_data.get("RootPath", {}).get("Content", [])
+    category_names = [cat.get("Name", "").lower() for cat in root_path if cat.get("Name")]
     
-    # 1. Пробуем определить по категории из RootPath
-    root_path = item.get("RootPath", {}).get("Content", [])
-    category_names = []
-    for cat in root_path:
-        name = cat.get("Name", "").lower()
-        if name:
-            category_names.append(name)
-    
-    # Ключевые слова для разных типов товаров
     type_keywords = {
         "стул": ["стул", "кресло", "chair", "табурет", "банкетка", "пуф"],
-        "стол": ["стол", "table", " desk"],
+        "стол": ["стол", "table", "desk"],
         "диван": ["диван", "sofa", "кушетка", "тахта"],
         "кровать": ["кровать", "bed"],
         "шкаф": ["шкаф", "cabinet", "wardrobe"],
         "светильник": ["свет", "лампа", "lamp", "люстра", "бра", "торшер"],
-        "ткань": ["ткань", "textile", "fabric", "материя"],
-        "ковёр": ["ковер", "ковёр", "carpet", "rug"],
     }
     
-    # 2. Ищем в категориях
-    detected_type = ""
     for cat_name in category_names:
         for item_type, keywords in type_keywords.items():
             if any(kw in cat_name for kw in keywords):
-                detected_type = item_type
-                break
-        if detected_type:
-            break
+                return item_type
     
-    # 3. Если не нашли в категориях — ищем в названиях
-    if not detected_type:
-        text_to_search = (title + " " + original_title).lower()
-        for item_type, keywords in type_keywords.items():
-            if any(kw in text_to_search for kw in keywords):
-                detected_type = item_type
-                break
+    text_to_search = (title + " " + original_title).lower()
+    for item_type, keywords in type_keywords.items():
+        if any(kw in text_to_search for kw in keywords):
+            return item_type
     
-    return detected_type
+    return ""
+
+def translate_with_deepseek(text, context, api_key):
+    """Переводит текст через DeepSeek"""
+    try:
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        prompt = f"""Переведи точно на русский язык:
+'{text}'
+Контекст: {context}
+Правила:
+1. ТОЛЬКО ТОЧНЫЙ ПЕРЕВОД, ничего не добавляй.
+2. Пиши с маленькой буквы.
+3. Верни ТОЛЬКО перевод."""
+        
+        payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 80}
+        response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"].strip()
+    except:
+        pass
+    return text
 
 def run_parser(product_url, progress_callback=None):
     def log(msg):
@@ -178,7 +160,7 @@ def run_parser(product_url, progress_callback=None):
         if progress_callback:
             progress_callback(msg)
 
-    log(f"🛒 Парсер товаров Taobao")
+    log("🛒 Парсер товаров Taobao")
     log("-" * 40)
 
     product_id = extract_product_id(product_url)
@@ -209,54 +191,74 @@ def run_parser(product_url, progress_callback=None):
     detected_type = detect_item_type(product_data.get("Result", {}), title, original_title)
     log(f"🔍 Определён тип товара: {detected_type or 'не определён'}")
 
-    # --- Исправляем название товара через DeepSeek с учётом типа ---
+    # --- Исправляем название товара ---
     fixed_title = title
     if original_title:
-        try:
-            headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-            
-            type_hint = ""
-            if detected_type:
-                type_hint = f"\nВАЖНО: Это {detected_type}. Не используй слова, не соответствующие этому типу товара."
-            
-            prompt = f"""Переведи точно на русский язык это название товара:
-'{original_title}'
-Правила:
-1. Сохрани тип товара.{type_hint}
-2. Сделай перевод читабельным, но без добавления лишних слов.
-3. Если в машинном переводе '{title}' есть ошибки (например, стул назван тканью) — исправь их.
-4. Верни ТОЛЬКО перевод."""
-            
-            payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 100}
-            response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
-            if response.status_code == 200:
-                fixed_title = response.json()["choices"][0]["message"]["content"].strip()
-        except:
-            pass
+        type_hint = f"Это {detected_type}." if detected_type else ""
+        fixed_title = translate_with_deepseek(original_title, type_hint, DEEPSEEK_API_KEY)
+        log(f"📦 Исправленное название: {fixed_title[:50]}...")
 
-    log(f"📦 Товар: {fixed_title[:50]}...")
-
-    vid_to_price = {}
+    # --- Настоящие артикулы из ConfiguredItems ---
+    real_skus = []
     for cfg_item in configured_items:
         configurators = cfg_item.get("Configurators", [])
         price_cny = cfg_item.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price", 0)
-        for cfg in configurators:
-            vid = cfg.get("Vid")
-            if vid:
-                vid_to_price[vid] = price_cny
+        sku_id = cfg_item.get("Id", "")
+        
+        vids = [c.get("Vid") for c in configurators if c.get("Vid")]
+        
+        # Находим соответствующие атрибуты
+        sku_parts = []
+        image_url = ""
+        for vid in vids:
+            for attr in all_attributes:
+                if attr.get("Vid") == vid:
+                    val = attr.get('OriginalValue') or attr.get('Value') or ''
+                    if val and val not in ['-1', '-8', '-10', '-21']:
+                        sku_parts.append(val)
+                    if attr.get('ImageUrl') and not image_url:
+                        image_url = attr.get('ImageUrl')
+                    break
+        
+        sku_name = ' '.join(sku_parts) if sku_parts else f'Артикул {len(real_skus)+1}'
+        
+        real_skus.append({
+            'id': sku_id,
+            'name': sku_name,
+            'price': price_cny,
+            'image_url': image_url
+        })
 
-    configurators = [a for a in all_attributes if a.get("IsConfigurator") == True]
-    desc_images = extract_images_from_html(description)
-    vendor_name = vendor.get("DisplayName") or vendor.get("ShopName") or "—"
+    # Fallback на Attributes
+    if not real_skus:
+        vid_to_price = {}
+        for cfg_item in configured_items:
+            for cfg in cfg_item.get("Configurators", []):
+                vid = cfg.get("Vid")
+                if vid:
+                    vid_to_price[vid] = cfg_item.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price", 0)
+        
+        for attr in all_attributes:
+            if attr.get("IsConfigurator"):
+                vid = attr.get("Vid")
+                real_skus.append({
+                    'id': vid,
+                    'name': attr.get('OriginalValue') or attr.get('Value') or '',
+                    'price': vid_to_price.get(vid, 0),
+                    'image_url': attr.get('ImageUrl', '')
+                })
 
-    log(f"🏷️ Артикулов: {len(configurators)}")
+    log(f"🏷️ Артикулов: {len(real_skus)}")
     log(f"🖼️ Галерея: {len(pictures)}")
+
+    desc_images = extract_images_from_html(description)
     log(f"📄 Картинок в описании: {len(desc_images)}")
 
     temp_dir = tempfile.mkdtemp()
     log(f"\n📁 Временная папка: {temp_dir}")
 
-    processed = 0
+    vendor_name = vendor.get("DisplayName") or vendor.get("ShopName") or "—"
+    
     txt = f"=== ТОВАР ===\nНазвание: {fixed_title}\nБренд: {item.get('BrandName', '—')}\n"
     txt += f"Продавец: {vendor_name}\nСсылка: {item.get('TaobaoItemUrl', product_url)}\n"
 
@@ -265,16 +267,18 @@ def run_parser(product_url, progress_callback=None):
         if video_url:
             txt += f"Видео: {video_url}\n"
 
-    txt += f"\n=== АРТИКУЛЫ ({len(configurators)} шт.) ===\n"
+    txt += f"\n=== АРТИКУЛЫ ({len(real_skus)} шт.) ===\n"
 
-    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-    
-    for i, cfg in enumerate(configurators, 1):
-        original_name = cfg.get('OriginalValue') or cfg.get('Value') or f'Артикул {i}'
-        vid = cfg.get('Vid')
-        price = vid_to_price.get(vid, 0)
-
-        # Извлекаем размеры
+    processed = 0
+    for i, sku in enumerate(real_skus, 1):
+        original_name = sku['name']
+        price = sku['price']
+        img_url = sku['image_url']
+        
+        # Перевод артикула
+        readable_sku = translate_with_deepseek(original_name, f"Характеристики {detected_type}", DEEPSEEK_API_KEY)
+        
+        # Извлекаем размеры из всех атрибутов
         dimensions = []
         for attr in all_attributes:
             prop_name = attr.get('PropertyName', '').lower()
@@ -283,39 +287,19 @@ def run_parser(product_url, progress_callback=None):
                 num_match = re.search(r'(\d+(\.\d+)?)', val)
                 if num_match:
                     dimensions.append(num_match.group(1))
-
+        
         size_str = ""
         if len(dimensions) >= 3:
-            size_str = f"{dimensions[0]}x{dimensions[1]}x{dimensions[2]} см"
+            size_str = f", {dimensions[0]}x{dimensions[1]}x{dimensions[2]} см"
         elif len(dimensions) == 2:
-            size_str = f"{dimensions[0]}x{dimensions[1]} см"
+            size_str = f", {dimensions[0]}x{dimensions[1]} см"
         elif len(dimensions) == 1:
-            size_str = f"{dimensions[0]} см"
-
-        # Точный перевод артикула
-        readable_sku = translate_text(original_name)
-        if not readable_sku or re.search(r'[\u4e00-\u9fff]', readable_sku):
-            try:
-                prompt = f"""Переведи точно на русский язык эти характеристики товара:
-'{original_name}'
-Правила:
-1. ТОЛЬКО ТОЧНЫЙ ПЕРЕВОД, не добавляй ничего.
-2. Пиши с маленькой буквы.
-3. Верни ТОЛЬКО перевод."""
-                
-                payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 60}
-                response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
-                if response.status_code == 200:
-                    readable_sku = response.json()["choices"][0]["message"]["content"].strip()
-            except:
-                pass
-
-        if size_str:
-            readable_sku = f"{readable_sku}, {size_str}"
-
+            size_str = f", {dimensions[0]} см"
+        
+        readable_sku = readable_sku + size_str
+        
         txt += f"{str(i).zfill(2)}. {fixed_title}, {readable_sku} — {price} ¥\n"
-
-        img_url = cfg.get('ImageUrl')
+        
         if img_url and is_valid_image_url(img_url):
             filename = f"{str(i).zfill(2)}_{sanitize_filename(readable_sku)}.webp"
             filepath = os.path.join(temp_dir, filename)
@@ -323,6 +307,7 @@ def run_parser(product_url, progress_callback=None):
                 processed += 1
                 log(f"  ✅ {filename}")
 
+    # --- Галерея ---
     txt += f"\n=== ГАЛЕРЕЯ ({len(pictures)} шт.) ===\n"
     for i, pic in enumerate(pictures, 1):
         txt += f"{str(i).zfill(2)}. Изображение {i}{' (главное)' if pic.get('IsMain') else ''}\n"
@@ -333,6 +318,7 @@ def run_parser(product_url, progress_callback=None):
                 processed += 1
                 log(f"  ✅ {filename}")
 
+    # --- Картинки из описания ---
     if desc_images:
         txt += f"\n=== КАРТИНКИ ИЗ ОПИСАНИЯ ({len(desc_images)} шт.) ===\n"
         for i, img_url in enumerate(desc_images, 1):
@@ -342,6 +328,7 @@ def run_parser(product_url, progress_callback=None):
                 processed += 1
                 log(f"  ✅ {filename}")
 
+    # --- Сохраняем ---
     txt_path = os.path.join(temp_dir, "описание.txt")
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(txt)
