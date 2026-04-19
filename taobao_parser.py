@@ -7,13 +7,13 @@ import tempfile
 from datetime import datetime
 from PIL import Image
 
-# --- 1. Настройки API (безопасно, через переменные окружения) ---
+# --- 1. Настройки API ---
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
 RAPIDAPI_HOST = "toabao-open-api.p.rapidapi.com"
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 
 if not RAPIDAPI_KEY or not DEEPSEEK_API_KEY:
-    raise ValueError("❌ Отсутствуют API-ключи. Добавьте их в Secrets Streamlit Cloud или в файл .streamlit/secrets.toml")
+    raise ValueError("❌ Отсутствуют API-ключи.")
 
 IMAGE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -129,9 +129,50 @@ def process_image(url, filepath):
     except:
         return False
 
-def run_parser(product_url, progress_callback=None):
-    """Запускает парсер и возвращает путь к ZIP-архиву"""
+def detect_item_type(item, title, original_title):
+    """Определяет тип товара по категории API или ключевым словам"""
     
+    # 1. Пробуем определить по категории из RootPath
+    root_path = item.get("RootPath", {}).get("Content", [])
+    category_names = []
+    for cat in root_path:
+        name = cat.get("Name", "").lower()
+        if name:
+            category_names.append(name)
+    
+    # Ключевые слова для разных типов товаров
+    type_keywords = {
+        "стул": ["стул", "кресло", "chair", "табурет", "банкетка", "пуф"],
+        "стол": ["стол", "table", " desk"],
+        "диван": ["диван", "sofa", "кушетка", "тахта"],
+        "кровать": ["кровать", "bed"],
+        "шкаф": ["шкаф", "cabinet", "wardrobe"],
+        "светильник": ["свет", "лампа", "lamp", "люстра", "бра", "торшер"],
+        "ткань": ["ткань", "textile", "fabric", "материя"],
+        "ковёр": ["ковер", "ковёр", "carpet", "rug"],
+    }
+    
+    # 2. Ищем в категориях
+    detected_type = ""
+    for cat_name in category_names:
+        for item_type, keywords in type_keywords.items():
+            if any(kw in cat_name for kw in keywords):
+                detected_type = item_type
+                break
+        if detected_type:
+            break
+    
+    # 3. Если не нашли в категориях — ищем в названиях
+    if not detected_type:
+        text_to_search = (title + " " + original_title).lower()
+        for item_type, keywords in type_keywords.items():
+            if any(kw in text_to_search for kw in keywords):
+                detected_type = item_type
+                break
+    
+    return detected_type
+
+def run_parser(product_url, progress_callback=None):
     def log(msg):
         print(msg)
         if progress_callback:
@@ -157,11 +198,43 @@ def run_parser(product_url, progress_callback=None):
     vendor = product_data.get("Result", {}).get("Vendor", {})
 
     title = item.get("Title", "Нет названия")
+    original_title = item.get("OriginalTitle", "")
     all_attributes = item.get("Attributes", [])
     pictures = item.get("Pictures", [])
     description = item.get("Description", "")
     configured_items = item.get("ConfiguredItems", [])
     videos = item.get("Videos", [])
+
+    # --- Определяем тип товара ---
+    detected_type = detect_item_type(product_data.get("Result", {}), title, original_title)
+    log(f"🔍 Определён тип товара: {detected_type or 'не определён'}")
+
+    # --- Исправляем название товара через DeepSeek с учётом типа ---
+    fixed_title = title
+    if original_title:
+        try:
+            headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+            
+            type_hint = ""
+            if detected_type:
+                type_hint = f"\nВАЖНО: Это {detected_type}. Не используй слова, не соответствующие этому типу товара."
+            
+            prompt = f"""Переведи точно на русский язык это название товара:
+'{original_title}'
+Правила:
+1. Сохрани тип товара.{type_hint}
+2. Сделай перевод читабельным, но без добавления лишних слов.
+3. Если в машинном переводе '{title}' есть ошибки (например, стул назван тканью) — исправь их.
+4. Верни ТОЛЬКО перевод."""
+            
+            payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 100}
+            response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
+            if response.status_code == 200:
+                fixed_title = response.json()["choices"][0]["message"]["content"].strip()
+        except:
+            pass
+
+    log(f"📦 Товар: {fixed_title[:50]}...")
 
     vid_to_price = {}
     for cfg_item in configured_items:
@@ -176,7 +249,6 @@ def run_parser(product_url, progress_callback=None):
     desc_images = extract_images_from_html(description)
     vendor_name = vendor.get("DisplayName") or vendor.get("ShopName") or "—"
 
-    log(f"📦 Товар: {title[:50]}...")
     log(f"🏷️ Артикулов: {len(configurators)}")
     log(f"🖼️ Галерея: {len(pictures)}")
     log(f"📄 Картинок в описании: {len(desc_images)}")
@@ -185,7 +257,7 @@ def run_parser(product_url, progress_callback=None):
     log(f"\n📁 Временная папка: {temp_dir}")
 
     processed = 0
-    txt = f"=== ТОВАР ===\nНазвание: {title}\nБренд: {item.get('BrandName', '—')}\n"
+    txt = f"=== ТОВАР ===\nНазвание: {fixed_title}\nБренд: {item.get('BrandName', '—')}\n"
     txt += f"Продавец: {vendor_name}\nСсылка: {item.get('TaobaoItemUrl', product_url)}\n"
 
     if videos:
@@ -193,31 +265,6 @@ def run_parser(product_url, progress_callback=None):
         if video_url:
             txt += f"Видео: {video_url}\n"
 
-    # --- SEO-заголовок с рандомным итальянским названием ---
-    base_seo_title = ""
-    try:
-        headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-        
-        prompt = f"""Создай короткий SEO-заголовок для карточки товара на русском языке длиной от 40 до 60 символов.
-Название товара: '{title}'.
-Правила:
-1. Если в названии уже есть модель — сохрани её.
-2. Если модели нет — придумай новое итальянское или английское название в стиле люкс (например: Bellagio, Venezia, Firenze, Capri, Portofino, Sorrento, Ravello, Amalfi, Como, Verona).
-3. Используй ключевые слова: дизайнерский, итальянский, люкс, премиум.
-4. Верни ТОЛЬКО готовый заголовок, без кавычек и пояснений."""
-        
-        payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.9, "max_tokens": 100}
-        response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
-        if response.status_code == 200:
-            base_seo_title = response.json()["choices"][0]["message"]["content"].strip()
-        else:
-            base_seo_title = title[:50]
-    except Exception as e:
-        log(f"  ⚠️ Ошибка DeepSeek: {e}")
-        base_seo_title = title[:50]
-
-    log(f"  📝 Общий SEO-заголовок: {base_seo_title}")
-    txt += f"\n=== ОБЩИЙ SEO-ЗАГОЛОВОК ===\n{base_seo_title}\n"
     txt += f"\n=== АРТИКУЛЫ ({len(configurators)} шт.) ===\n"
 
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
@@ -227,7 +274,7 @@ def run_parser(product_url, progress_callback=None):
         vid = cfg.get('Vid')
         price = vid_to_price.get(vid, 0)
 
-        # Извлекаем размеры из атрибутов
+        # Извлекаем размеры
         dimensions = []
         for attr in all_attributes:
             prop_name = attr.get('PropertyName', '').lower()
@@ -246,17 +293,13 @@ def run_parser(product_url, progress_callback=None):
             size_str = f"{dimensions[0]} см"
 
         # Точный перевод артикула
-        readable_sku = ""
-        try:
-            rough_translation = translate_text(original_name)
-            
-            if rough_translation and rough_translation != original_name and not re.search(r'[\u4e00-\u9fff]', rough_translation):
-                readable_sku = rough_translation
-            else:
-                prompt = f"""Переведи точно на русский язык это описание материала и цвета мебели:
+        readable_sku = translate_text(original_name)
+        if not readable_sku or re.search(r'[\u4e00-\u9fff]', readable_sku):
+            try:
+                prompt = f"""Переведи точно на русский язык эти характеристики товара:
 '{original_name}'
 Правила:
-1. ТОЛЬКО ТОЧНЫЙ ПЕРЕВОД, ничего не добавляй и не убирай.
+1. ТОЛЬКО ТОЧНЫЙ ПЕРЕВОД, не добавляй ничего.
 2. Пиши с маленькой буквы.
 3. Верни ТОЛЬКО перевод."""
                 
@@ -264,24 +307,13 @@ def run_parser(product_url, progress_callback=None):
                 response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
                 if response.status_code == 200:
                     readable_sku = response.json()["choices"][0]["message"]["content"].strip()
-                else:
-                    readable_sku = original_name
-        except:
-            readable_sku = translate_text(original_name)
-            if not readable_sku or readable_sku == original_name:
-                readable_sku = original_name
+            except:
+                pass
 
-        # Добавляем размер к описанию
         if size_str:
             readable_sku = f"{readable_sku}, {size_str}"
 
-        full_title = f"{base_seo_title}, {readable_sku}"
-        if len(full_title) < 60:
-            full_title = f"{full_title} купить с доставкой"
-        elif len(full_title) > 120:
-            full_title = full_title[:117].rsplit(' ', 1)[0] + "..."
-
-        txt += f"{str(i).zfill(2)}. {full_title} — {price} ¥\n"
+        txt += f"{str(i).zfill(2)}. {fixed_title}, {readable_sku} — {price} ¥\n"
 
         img_url = cfg.get('ImageUrl')
         if img_url and is_valid_image_url(img_url):
