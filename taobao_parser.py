@@ -22,21 +22,15 @@ IMAGE_HEADERS = {
 }
 
 def extract_product_id(url):
-    """Извлекает ID товара из ссылок Taobao и Tmall"""
-    # Формат: ?id=123456
     match = re.search(r'[?&]id=(\d+)', url)
     if match:
         return match.group(1)
-    
-    # Формат: /item/123456.htm
     match = re.search(r'/item/(\d+)\.htm', url)
     if match:
         return match.group(1)
-    
     return None
 
 def get_taobao_product(item_id):
-    """Получает данные товара через RapidAPI (поддерживает Taobao и Tmall)"""
     url = "https://toabao-open-api.p.rapidapi.com/BatchGetItemFullInfo"
     querystring = {"itemId": item_id, "language": "ru"}
     headers = {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
@@ -120,7 +114,6 @@ def process_image(url, filepath):
         return False
 
 def detect_item_type(product_data, title, original_title):
-    """Определяет тип товара по категории API или ключевым словам"""
     root_path = product_data.get("RootPath", {}).get("Content", [])
     category_names = [cat.get("Name", "").lower() for cat in root_path if cat.get("Name")]
     
@@ -182,11 +175,10 @@ def run_parser(product_url, progress_callback=None):
     detected_type = detect_item_type(product_data.get("Result", {}), title, original_title)
     log(f"🔍 Определён тип товара: {detected_type or 'не определён'}")
 
-    # --- Переводим название товара и добавляем английскую модель ---
+    # --- Переводим название товара ---
     fixed_title = title
     if original_title:
         type_hint = f"Это {detected_type}." if detected_type else ""
-        
         try:
             headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
             prompt = f"""Переведи на русский язык и добавь английское название модели в стиле люкс (например, Milano, Venezia, Capri, Bellagio).
@@ -195,7 +187,6 @@ def run_parser(product_url, progress_callback=None):
 Формат: [Русское название] [English Model Name]
 Пример: Итальянский роскошный обеденный стул Capri
 Верни ТОЛЬКО готовое название."""
-            
             payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.7, "max_tokens": 120}
             response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
             if response.status_code == 200:
@@ -205,50 +196,60 @@ def run_parser(product_url, progress_callback=None):
 
     log(f"📦 Название: {fixed_title[:50]}...")
 
-    # --- Проверяем акционную цену в Promotions ---
+    # --- Строим словари цен ---
     promotions = item.get("Promotions", [])
-    promo_price = None
+    
+    # Словарь: Id артикула → акционная цена
+    promo_prices_by_id = {}
     if promotions:
-        promo_price = promotions[0].get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price")
-        if promo_price:
-            log(f"💰 Найдена акционная цена: {promo_price} ¥")
-
-    # --- Настоящие артикулы из ConfiguredItems ---
-    real_skus = []
+        promo_config_items = promotions[0].get("ConfiguredItems", [])
+        for pci in promo_config_items:
+            pci_id = pci.get("Id", "")
+            pci_price = pci.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price")
+            if pci_id and pci_price:
+                promo_prices_by_id[pci_id] = pci_price
+    
+    # Словарь: Vid → цена (из ConfiguredItems, с учётом акций)
+    vid_to_price = {}
     for cfg_item in configured_items:
         configurators = cfg_item.get("Configurators", [])
+        cfg_id = cfg_item.get("Id", "")
         
-        if promo_price is not None:
-            price_cny = promo_price
+        # Берём акционную цену, если есть, иначе обычную
+        if cfg_id in promo_prices_by_id:
+            price_cny = promo_prices_by_id[cfg_id]
         else:
             price_cny = cfg_item.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price", 0)
         
-        sku_id = cfg_item.get("Id", "")
-        vids = [c.get("Vid") for c in configurators if c.get("Vid")]
+        for cfg in configurators:
+            vid = cfg.get("Vid")
+            if vid:
+                vid_to_price[vid] = price_cny
+    
+    # --- Настоящие артикулы: конфигураторы из Attributes в исходном порядке ---
+    configurator_attrs = [a for a in all_attributes if a.get("IsConfigurator") == True]
+    
+    real_skus = []
+    for attr in configurator_attrs:
+        vid = attr.get("Vid", "")
+        original_name = attr.get('OriginalValue') or attr.get('Value') or ''
         
-        sku_parts = []
-        image_url = ""
-        for vid in vids:
-            for attr in all_attributes:
-                if attr.get("Vid") == vid:
-                    val = attr.get('OriginalValue') or attr.get('Value') or ''
-                    if val and val not in ['-1', '-2', '-3', '-4', '-5', '-6', '-7', '-8']:
-                        val = re.sub(r'[【\[\]】]', '', val).strip()
-                        if val:
-                            sku_parts.append(val)
-                    if attr.get('ImageUrl') and not image_url:
-                        image_url = attr.get('ImageUrl')
-                    break
+        # Убираем скобки 【】 и []
+        original_name = re.sub(r'[【\[\]】]', '', original_name).strip()
         
-        sku_name = ' '.join(sku_parts) if sku_parts else f'Артикул {len(real_skus)+1}'
+        if not original_name:
+            continue
+        
+        price = vid_to_price.get(vid, 0)
+        image_url = attr.get('ImageUrl', '')
         
         real_skus.append({
-            'id': sku_id,
-            'name': sku_name,
-            'price': price_cny,
+            'id': vid,
+            'name': original_name,
+            'price': price,
             'image_url': image_url
         })
-
+    
     log(f"🏷️ Артикулов: {len(real_skus)}")
 
     desc_images = extract_images_from_html(description)
@@ -276,34 +277,32 @@ def run_parser(product_url, progress_callback=None):
         img_url = sku['image_url']
         
         readable_sku = original_name
-        try:
-            headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-            prompt = f"""Ты — профессиональный переводчик с китайского на русский в сфере мебели и товаров для дома.
+        # Проверяем, есть ли китайские иероглифы
+        if re.search(r'[\u4e00-\u9fff]', original_name):
+            try:
+                headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+                prompt = f"""Ты — профессиональный переводчик с китайского на русский в сфере мебели и товаров для дома.
 
-Переведи название артикула ТОЧНО на русский язык:
-'{original_name}'
+    Переведи название артикула ТОЧНО на русский язык:
+    '{original_name}'
 
-ВАЖНО:
-- Переведи КАЖДОЕ слово, ничего не пропускай.
-- НЕ возвращай китайские иероглифы — ТОЛЬКО русский перевод.
-- Если в названии есть модель (Pagase, Milano, CY2601 и т.п.) — сохрани её латиницей.
-- Пиши с маленькой буквы.
+    ВАЖНО:
+    - Переведи КАЖДОЕ слово, ничего не пропускай.
+    - НЕ возвращай китайские иероглифы — ТОЛЬКО русский перевод.
+    - Если в названии есть модель — сохрани её латиницей.
+    - Пиши с маленькой буквы.
 
-Примеры:
-'Pagase餐椅暖橙色' → 'pagase обеденный стул теплый оранжевый'
-'Milano沙发灰色' → 'milano диван серый'
-'CY2601书桌白色' → 'cy2601 письменный стол белый'
-'雾霭蓝' → 'туманно-голубой'
-
-Верни ТОЛЬКО перевод, без пояснений."""
-            
-            payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 60}
-            response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
-            if response.status_code == 200:
-                readable_sku = response.json()["choices"][0]["message"]["content"].strip()
-        except:
-            pass
+    Верни ТОЛЬКО перевод, без пояснений."""
+                
+                payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 60}
+                response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
+                if response.status_code == 200:
+                    raw = response.json()["choices"][0]["message"]["content"]
+                    readable_sku = re.sub(r'\s+', ' ', raw).strip()
+            except:
+                pass
         
+        # Извлекаем размеры
         dimensions = []
         for attr in all_attributes:
             prop_name = attr.get('PropertyName', '').lower()
