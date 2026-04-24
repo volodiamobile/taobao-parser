@@ -22,10 +22,21 @@ IMAGE_HEADERS = {
 }
 
 def extract_product_id(url):
+    """Извлекает ID товара из ссылок Taobao и Tmall"""
+    # Формат: ?id=123456
     match = re.search(r'[?&]id=(\d+)', url)
-    return match.group(1) if match else None
+    if match:
+        return match.group(1)
+    
+    # Формат: /item/123456.htm
+    match = re.search(r'/item/(\d+)\.htm', url)
+    if match:
+        return match.group(1)
+    
+    return None
 
 def get_taobao_product(item_id):
+    """Получает данные товара через RapidAPI (поддерживает Taobao и Tmall)"""
     url = "https://toabao-open-api.p.rapidapi.com/BatchGetItemFullInfo"
     querystring = {"itemId": item_id, "language": "ru"}
     headers = {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
@@ -140,7 +151,7 @@ def run_parser(product_url, progress_callback=None):
         if progress_callback:
             progress_callback(msg)
 
-    log("🛒 Парсер товаров Taobao")
+    log("🛒 Парсер товаров Taobao/Tmall")
     log("-" * 40)
 
     product_id = extract_product_id(product_url)
@@ -207,7 +218,6 @@ def run_parser(product_url, progress_callback=None):
     for cfg_item in configured_items:
         configurators = cfg_item.get("Configurators", [])
         
-        # Используем акционную цену, если есть, иначе обычную
         if promo_price is not None:
             price_cny = promo_price
         else:
@@ -223,7 +233,6 @@ def run_parser(product_url, progress_callback=None):
                 if attr.get("Vid") == vid:
                     val = attr.get('OriginalValue') or attr.get('Value') or ''
                     if val and val not in ['-1', '-2', '-3', '-4', '-5', '-6', '-7', '-8']:
-                        # Убираем только скобки 【】 и [], оставляя содержимое
                         val = re.sub(r'[【\[\]】]', '', val).strip()
                         if val:
                             sku_parts.append(val)
@@ -266,7 +275,6 @@ def run_parser(product_url, progress_callback=None):
         price = sku['price']
         img_url = sku['image_url']
         
-        # Профессиональный перевод с контекстом и примерами
         readable_sku = original_name
         try:
             headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
@@ -296,7 +304,6 @@ def run_parser(product_url, progress_callback=None):
         except:
             pass
         
-        # Извлекаем размеры
         dimensions = []
         for attr in all_attributes:
             prop_name = attr.get('PropertyName', '').lower()
@@ -316,7 +323,6 @@ def run_parser(product_url, progress_callback=None):
         
         readable_sku = readable_sku + size_str
         
-        # НЕ дублируем название товара в артикуле
         txt += f"{str(i).zfill(2)}. {readable_sku} — {price} ¥\n"
         
         if img_url and is_valid_image_url(img_url):
@@ -326,7 +332,6 @@ def run_parser(product_url, progress_callback=None):
                 processed += 1
                 log(f"  ✅ {filename}")
 
-    # --- Галерея ---
     txt += f"\n=== ГАЛЕРЕЯ ({len(pictures)} шт.) ===\n"
     for i, pic in enumerate(pictures, 1):
         txt += f"{str(i).zfill(2)}. Изображение {i}{' (главное)' if pic.get('IsMain') else ''}\n"
@@ -337,7 +342,6 @@ def run_parser(product_url, progress_callback=None):
                 processed += 1
                 log(f"  ✅ {filename}")
 
-    # --- Картинки из описания ---
     if desc_images:
         txt += f"\n=== КАРТИНКИ ИЗ ОПИСАНИЯ ({len(desc_images)} шт.) ===\n"
         for i, img_url in enumerate(desc_images, 1):
@@ -347,18 +351,15 @@ def run_parser(product_url, progress_callback=None):
                 processed += 1
                 log(f"  ✅ {filename}")
 
-    # --- Сохраняем TXT ---
     txt_path = os.path.join(temp_dir, "описание.txt")
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(txt)
 
-    # --- Сохраняем полный JSON-ответ от API ---
     json_path = os.path.join(temp_dir, "api_response.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(product_data, f, indent=2, ensure_ascii=False)
     log(f"  ✅ api_response.json сохранён")
 
-    # --- Создаём ZIP ---
     zip_name = f"taobao_{product_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
     zip_path = os.path.join(temp_dir, zip_name)
     
