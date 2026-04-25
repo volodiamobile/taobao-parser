@@ -171,11 +171,9 @@ def run_parser(product_url, progress_callback=None):
     configured_items = item.get("ConfiguredItems", [])
     videos = item.get("Videos", [])
 
-    # --- Определяем тип товара ---
     detected_type = detect_item_type(product_data.get("Result", {}), title, original_title)
     log(f"🔍 Определён тип товара: {detected_type or 'не определён'}")
 
-    # --- Переводим название товара ---
     fixed_title = title
     if original_title:
         type_hint = f"Это {detected_type}." if detected_type else ""
@@ -196,10 +194,7 @@ def run_parser(product_url, progress_callback=None):
 
     log(f"📦 Название: {fixed_title[:50]}...")
 
-    # --- Строим словари цен ---
     promotions = item.get("Promotions", [])
-    
-    # Словарь: Id артикула → акционная цена
     promo_prices_by_id = {}
     if promotions:
         promo_config_items = promotions[0].get("ConfiguredItems", [])
@@ -209,40 +204,29 @@ def run_parser(product_url, progress_callback=None):
             if pci_id and pci_price:
                 promo_prices_by_id[pci_id] = pci_price
     
-    # Словарь: Vid → цена (из ConfiguredItems, с учётом акций)
     vid_to_price = {}
     for cfg_item in configured_items:
         configurators = cfg_item.get("Configurators", [])
         cfg_id = cfg_item.get("Id", "")
-        
-        # Берём акционную цену, если есть, иначе обычную
         if cfg_id in promo_prices_by_id:
             price_cny = promo_prices_by_id[cfg_id]
         else:
             price_cny = cfg_item.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price", 0)
-        
         for cfg in configurators:
             vid = cfg.get("Vid")
             if vid:
                 vid_to_price[vid] = price_cny
     
-    # --- Настоящие артикулы: конфигураторы из Attributes в исходном порядке ---
     configurator_attrs = [a for a in all_attributes if a.get("IsConfigurator") == True]
-    
     real_skus = []
     for attr in configurator_attrs:
         vid = attr.get("Vid", "")
         original_name = attr.get('OriginalValue') or attr.get('Value') or ''
-        
-        # Убираем скобки 【】 и []
         original_name = re.sub(r'[【\[\]】]', '', original_name).strip()
-        
         if not original_name:
             continue
-        
         price = vid_to_price.get(vid, 0)
         image_url = attr.get('ImageUrl', '')
-        
         real_skus.append({
             'id': vid,
             'name': original_name,
@@ -277,32 +261,30 @@ def run_parser(product_url, progress_callback=None):
         img_url = sku['image_url']
         
         readable_sku = original_name
-        # Проверяем, есть ли китайские иероглифы
         if re.search(r'[\u4e00-\u9fff]', original_name):
             try:
                 headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
                 prompt = f"""Ты — профессиональный переводчик с китайского на русский в сфере мебели и товаров для дома.
 
-    Переведи название артикула ТОЧНО на русский язык:
-    '{original_name}'
+Переведи название артикула ТОЧНО на русский язык:
+'{original_name}'
 
-    ВАЖНО:
-    - Переведи КАЖДОЕ слово, ничего не пропускай.
-    - НЕ возвращай китайские иероглифы — ТОЛЬКО русский перевод.
-    - Если в названии есть модель — сохрани её латиницей.
-    - Пиши с маленькой буквы.
+ВАЖНО:
+- Переведи КАЖДОЕ слово, ничего не пропускай.
+- НЕ возвращай китайские иероглифы — ТОЛЬКО русский перевод.
+- Если в названии есть модель — сохрани её латиницей.
+- Пиши с маленькой буквы.
 
-    Верни ТОЛЬКО перевод, без пояснений."""
+Верни ТОЛЬКО перевод, без пояснений."""
                 
                 payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 60}
-                response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
+                response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=10)
                 if response.status_code == 200:
                     raw = response.json()["choices"][0]["message"]["content"]
                     readable_sku = re.sub(r'\s+', ' ', raw).strip()
             except:
                 pass
         
-        # Извлекаем размеры
         dimensions = []
         for attr in all_attributes:
             prop_name = attr.get('PropertyName', '').lower()
