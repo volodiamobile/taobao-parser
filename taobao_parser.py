@@ -243,12 +243,19 @@ def run_parser(product_url, progress_callback=None):
         if vid and img_url:
             vid_to_image[vid] = img_url
 
-    # Словарь Id → акционная цена
+    # Словарь Id → акционная цена из Promotions (ВСЕГДА используется, если есть)
     promotions = item.get("Promotions", [])
     promo_prices = {}
+    use_promo = False
     if promotions:
-        for pci in promotions[0].get("ConfiguredItems", []):
-            promo_prices[pci.get("Id", "")] = pci.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price", 0)
+        promo_config = promotions[0].get("ConfiguredItems", [])
+        if promo_config:
+            for pci in promo_config:
+                price = pci.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price")
+                if price:
+                    promo_prices[pci.get("Id", "")] = price
+            use_promo = True
+            log(f"💰 Будут использованы акционные цены (со скидкой)")
 
     # --- Настоящие артикулы из ConfiguredItems ---
     real_skus = []
@@ -256,8 +263,8 @@ def run_parser(product_url, progress_callback=None):
         configurators = cfg_item.get("Configurators", [])
         sku_id = cfg_item.get("Id", "")
         
-        # Цена: сначала акционная, потом обычная
-        if sku_id in promo_prices:
+        # Цена: ВСЕГДА акционная, если есть; иначе — обычная
+        if use_promo and sku_id in promo_prices:
             price_cny = promo_prices[sku_id]
         else:
             price_cny = cfg_item.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price", 0)
