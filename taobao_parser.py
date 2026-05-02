@@ -139,7 +139,7 @@ def detect_item_type(product_data, title, original_title):
     return ""
 
 def translate_with_deepseek(text, api_key):
-    """Переводит текст через DeepSeek (max_tokens: 200)"""
+    """Переводит текст через DeepSeek"""
     if not re.search(r'[\u4e00-\u9fff]', text):
         return text
     try:
@@ -157,7 +157,7 @@ def translate_with_deepseek(text, api_key):
 
 Верни ТОЛЬКО перевод, без пояснений."""
         
-        payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 200}
+        payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 60}
         response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=10)
         if response.status_code == 200:
             raw = response.json()["choices"][0]["message"]["content"]
@@ -284,25 +284,6 @@ def run_parser(product_url, progress_callback=None):
             'price': price_cny,
             'image_url': image_url
         })
-
-    # --- FALLBACK: Если нет артикулов — берём из Attributes ---
-    if not real_skus:
-        log("⚠️ ConfiguredItems не дали результатов, использую Attributes")
-        for attr in all_attributes:
-            if attr.get("IsConfigurator"):
-                vid = attr.get("Vid", "")
-                original_name = attr.get('OriginalValue') or attr.get('Value') or ''
-                original_name = re.sub(r'[【\[\]】]', '', original_name).strip()
-                if not original_name:
-                    continue
-                price = vid_to_price.get(vid, 0) if vid_to_price else 0
-                image_url = attr.get('ImageUrl', '')
-                real_skus.append({
-                    'id': vid,
-                    'name': original_name,
-                    'price': price,
-                    'image_url': image_url
-                })
 
     log(f"🏷️ Артикулов: {len(real_skus)}")
 
