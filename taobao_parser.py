@@ -203,19 +203,20 @@ def run_parser(product_url, progress_callback=None):
     detected_type = detect_item_type(product_data.get("Result", {}), title, original_title)
     log(f"🔍 Определён тип товара: {detected_type or 'не определён'}")
 
-    # --- Переводим название товара ---
+    # --- Переводим название товара с УНИКАЛЬНЫМ названием модели ---
     fixed_title = title
     if original_title:
         type_hint = f"Это {detected_type}." if detected_type else ""
         try:
             headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-            prompt = f"""Переведи на русский язык и добавь английское название модели в стиле люкс (например, Milano, Venezia, Capri, Bellagio).
+            prompt = f"""Переведи на русский язык и добавь УНИКАЛЬНОЕ название модели.
 Оригинал: '{original_title}'
 {type_hint}
-Формат: [Русское название] [English Model Name]
-Пример: Итальянский роскошный обеденный стул Capri
+Формат: [Русское название] [Model Name]
+ВАЖНО: Придумай НОВОЕ, УНИКАЛЬНОЕ название модели — итальянское или английское слово, передающее стиль люкс. 
+НЕ используй распространённые названия (Milano, Roma, Venezia, Bellagio, Capri, Firenze, Verona).
 Верни ТОЛЬКО готовое название."""
-            payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.7, "max_tokens": 120}
+            payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.9, "max_tokens": 120}
             response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
             if response.status_code == 200:
                 fixed_title = response.json()["choices"][0]["message"]["content"].strip()
@@ -225,7 +226,6 @@ def run_parser(product_url, progress_callback=None):
     log(f"📦 Название: {fixed_title[:50]}...")
 
     # --- Строим словари ---
-    # Словарь Vid → название (из Attributes)
     vid_to_name = {}
     for attr in all_attributes:
         vid = attr.get("Vid", "")
@@ -235,7 +235,6 @@ def run_parser(product_url, progress_callback=None):
             if original_name:
                 vid_to_name[vid] = original_name
 
-    # Словарь Vid → картинка
     vid_to_image = {}
     for attr in all_attributes:
         vid = attr.get("Vid", "")
@@ -263,13 +262,11 @@ def run_parser(product_url, progress_callback=None):
         configurators = cfg_item.get("Configurators", [])
         sku_id = cfg_item.get("Id", "")
         
-        # Цена: ВСЕГДА акционная, если есть; иначе — обычная
         if use_promo and sku_id in promo_prices:
             price_cny = promo_prices[sku_id]
         else:
             price_cny = cfg_item.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price", 0)
         
-        # Собираем название из Vid'ов
         parts = []
         image_url = ""
         for cfg in configurators:
