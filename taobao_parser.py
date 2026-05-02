@@ -139,7 +139,7 @@ def detect_item_type(product_data, title, original_title):
     return ""
 
 def translate_with_deepseek(text, api_key):
-    """Переводит текст через DeepSeek"""
+    """Переводит текст через DeepSeek (без ограничения длины)"""
     if not re.search(r'[\u4e00-\u9fff]', text):
         return text
     try:
@@ -157,7 +157,7 @@ def translate_with_deepseek(text, api_key):
 
 Верни ТОЛЬКО перевод, без пояснений."""
         
-        payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 60}
+        payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0}
         response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=10)
         if response.status_code == 200:
             raw = response.json()["choices"][0]["message"]["content"]
