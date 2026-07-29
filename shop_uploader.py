@@ -48,8 +48,8 @@ class ShopScriptUploader:
         # Добавляем артикулы
         for i, sku in enumerate(skus_data):
             data[f'skus[{i}][name]'] = sku['name'][:255]
-            data[f'skus[{i}][price]'] = int(sku.get('price_cny', 0))
-            data[f'skus[{i}][purchase_price]'] = int(sku.get('price_cny', 0))
+            data[f'skus[{i}][price]'] = 0
+            data[f'skus[{i}][purchase_price]'] = int(sku.get('price', 0))
 
         resp = self._post('shop.product.add', data=data)
         if 'error' in resp and resp['error']:

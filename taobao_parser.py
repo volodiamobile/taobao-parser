@@ -276,7 +276,11 @@ def run_parser(product_url, progress_callback=None):
             if not image_url and vid in vid_to_image:
                 image_url = vid_to_image[vid]
         
-        sku_name = ', '.join(parts) if parts else f'Артикул {len(real_skus)+1}'
+        # Переводим названия SKU с китайского на русский
+        translated_parts = []
+        for part in parts:
+            translated_parts.append(translate_with_deepseek(part, DEEPSEEK_API_KEY))
+        sku_name = ', '.join(translated_parts) if translated_parts else f'Артикул {len(real_skus)+1}'
         
         real_skus.append({
             'id': sku_id,
@@ -326,16 +330,14 @@ def run_parser(product_url, progress_callback=None):
 
     processed = 0
     for i, sku in enumerate(real_skus, 1):
-        original_name = sku['name']
+        sku_name = sku['name']
         price = sku['price']
         img_url = sku['image_url']
         
-        readable_sku = translate_with_deepseek(original_name, DEEPSEEK_API_KEY)
-        
-        txt += f"{str(i).zfill(2)}. {readable_sku} — {price} ¥\n"
+        txt += f"{str(i).zfill(2)}. {sku_name} — {price} ¥\n"
         
         if img_url and is_valid_image_url(img_url):
-            filename = f"{str(i).zfill(2)}_{sanitize_filename(readable_sku)}.webp"
+            filename = f"{str(i).zfill(2)}_{sanitize_filename(sku_name)}.webp"
             filepath = os.path.join(temp_dir, filename)
             if process_image(img_url, filepath):
                 processed += 1
