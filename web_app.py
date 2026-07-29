@@ -65,10 +65,14 @@ if st.button("🚀 Обработать товар", type="primary", disabled=no
                     if st.button("🛒 Загрузить в E-Mall (черновик)", type="primary"):
                         with st.spinner("Загрузка в магазин..."):
                             try:
+                                st.write('🔍 Токен:', shop_token[:10] + '...')
                                 uploader = ShopScriptUploader(shop_token)
+                                st.write('🔍 title:', str(result.get('title',''))[:50])
+                                st.write('🔍 gallery:', str(len(result.get('gallery_urls',[]))))
+                                st.write('🔍 skus:', str(len(result.get('skus',[]))))
                                 title = result['title']
                                 taobao_url = result['taobao_url']
-                                gallery = result['gallery_urls'][:5]  # первые 5 главных
+                                gallery = result['gallery_urls'][:5]
                                 skus = result['skus']
                                 
                                 product_id, logs = uploader.run(title, taobao_url, gallery, skus)
@@ -76,6 +80,8 @@ if st.button("🚀 Обработать товар", type="primary", disabled=no
                                 st.text('\n'.join(logs[-10:]))
                             except Exception as e:
                                 st.error(f"❌ Ошибка: {e}")
+                                import traceback
+                                st.error(traceback.format_exc())
                 else:
                     st.warning("⚠️ SHOP_API_TOKEN не найден. Загрузка в магазин недоступна.")
             else:
