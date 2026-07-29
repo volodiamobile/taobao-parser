@@ -91,7 +91,7 @@ def process_image(url, filepath):
         img.verify()
         img = Image.open(temp_file)
 
-        target_size = 1100
+        target_size = 800
         width, height = img.size
         scale = target_size / max(width, height)
         new_width = int(width * scale)
@@ -384,4 +384,18 @@ def run_parser(product_url, progress_callback=None):
     log(f"✅ Готово! Файлов: {processed}")
     log(f"📦 Архив: {zip_name}")
 
-    return zip_path
+    # Возвращаем структурированные данные для shop_uploader
+    gallery = [pic.get('Large', {}).get('Url') or pic.get('Medium', {}).get('Url') or pic.get('Url') for pic in pictures if pic.get('Url')]
+    gallery = [u for u in gallery if u]
+    
+    result = {
+        'zip_path': zip_path,
+        'title': fixed_title,
+        'taobao_url': product_url,
+        'product_id': product_id,
+        'skus': real_skus,
+        'gallery_urls': gallery,
+        'desc_images': desc_images,
+        'videos': videos,
+    }
+    return result

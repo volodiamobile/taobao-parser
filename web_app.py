@@ -1,6 +1,8 @@
 import streamlit as st
 import os
+import json
 from taobao_parser import run_parser
+from shop_uploader import ShopScriptUploader
 
 st.set_page_config(page_title="Taobao/Tmall Parser", page_icon="🛒", layout="wide")
 
@@ -42,16 +44,39 @@ if st.button("🚀 Обработать товар", type="primary", disabled=no
             log_container.text("\n".join(logs[-20:]))
         
         with st.spinner("Идет обработка, подождите..."):
-            zip_path = run_parser(url, progress_callback=log_callback)
+            result = run_parser(url, progress_callback=log_callback)
             
-            if zip_path and os.path.exists(zip_path):
+            if result and result.get('zip_path') and os.path.exists(result['zip_path']):
                 st.success("✅ Обработка завершена!")
-                with open(zip_path, "rb") as f:
+                with open(result['zip_path'], "rb") as f:
                     st.download_button(
                         label="📥 Скачать ZIP-архив",
                         data=f,
-                        file_name=os.path.basename(zip_path),
+                        file_name=os.path.basename(result['zip_path']),
                         mime="application/zip"
                     )
+                
+                # Сохраняем результат в сессии для кнопки загрузки
+                st.session_state.parsed_result = result
+                
+                # Кнопка загрузки в магазин
+                shop_token = os.environ.get("SHOP_API_TOKEN", st.secrets.get("SHOP_API_TOKEN", ""))
+                if shop_token:
+                    if st.button("🛒 Загрузить в E-Mall (черновик)", type="primary"):
+                        with st.spinner("Загрузка в магазин..."):
+                            try:
+                                uploader = ShopScriptUploader(shop_token)
+                                title = result['title']
+                                taobao_url = result['taobao_url']
+                                gallery = result['gallery_urls'][:5]  # первые 5 главных
+                                skus = result['skus']
+                                
+                                product_id, logs = uploader.run(title, taobao_url, gallery, skus)
+                                st.success(f"✅ Товар #{product_id} создан (черновик)!")
+                                st.text('\n'.join(logs[-10:]))
+                            except Exception as e:
+                                st.error(f"❌ Ошибка: {e}")
+                else:
+                    st.warning("⚠️ SHOP_API_TOKEN не найден. Загрузка в магазин недоступна.")
             else:
                 st.error("❌ Ошибка при обработке товара")
