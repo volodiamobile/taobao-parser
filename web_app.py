@@ -6,7 +6,6 @@ from shop_uploader import ShopScriptUploader
 
 st.set_page_config(page_title="Taobao/Tmall Parser", page_icon="🛒", layout="wide")
 
-# Пароль из secrets или переменной окружения
 ACCESS_PASSWORD = os.environ.get("APP_PASSWORD", st.secrets.get("APP_PASSWORD", "taobao2024"))
 
 if "authenticated" not in st.session_state:
@@ -32,6 +31,7 @@ if st.sidebar.button("🚪 Выйти"):
 
 url = st.text_input("Ссылка на товар Taobao/Tmall:", placeholder="https://item.taobao.com/item.htm?id=... или https://detail.tmall.com/item.htm?id=...")
 
+# === Обработка товара ===
 if st.button("🚀 Обработать товар", type="primary", disabled=not url):
     if "taobao.com" not in url and "tmall.com" not in url:
         st.error("❌ Ссылка должна быть на сайт Taobao или Tmall.")
@@ -55,34 +55,28 @@ if st.button("🚀 Обработать товар", type="primary", disabled=no
                         file_name=os.path.basename(result['zip_path']),
                         mime="application/zip"
                     )
-                
-                # Сохраняем результат в сессии для кнопки загрузки
                 st.session_state.parsed_result = result
-                
-                # Кнопка загрузки в магазин
-                shop_token = os.environ.get("SHOP_API_TOKEN", st.secrets.get("SHOP_API_TOKEN", ""))
-                if shop_token:
-                    if st.button("🛒 Загрузить в E-Mall (черновик)", type="primary"):
-                        with st.spinner("Загрузка в магазин..."):
-                            try:
-                                st.write('🔍 Токен:', shop_token[:10] + '...')
-                                uploader = ShopScriptUploader(shop_token)
-                                st.write('🔍 title:', str(result.get('title',''))[:50])
-                                st.write('🔍 gallery:', str(len(result.get('gallery_urls',[]))))
-                                st.write('🔍 skus:', str(len(result.get('skus',[]))))
-                                title = result['title']
-                                taobao_url = result['taobao_url']
-                                gallery = result['gallery_urls'][:5]
-                                skus = result['skus']
-                                
-                                product_id, logs = uploader.run(title, taobao_url, gallery, skus)
-                                st.success(f"✅ Товар #{product_id} создан (черновик)!")
-                                st.text('\n'.join(logs[-10:]))
-                            except Exception as e:
-                                st.error(f"❌ Ошибка: {e}")
-                                import traceback
-                                st.error(traceback.format_exc())
-                else:
-                    st.warning("⚠️ SHOP_API_TOKEN не найден. Загрузка в магазин недоступна.")
             else:
                 st.error("❌ Ошибка при обработке товара")
+
+# === Загрузка в магазин (ВНЕ блока обработки!) ===
+if st.session_state.get('parsed_result'):
+    shop_token = os.environ.get("SHOP_API_TOKEN", st.secrets.get("SHOP_API_TOKEN", ""))
+    if shop_token:
+        if st.button("🛒 Загрузить в E-Mall (черновик)", type="primary"):
+            with st.spinner("Загрузка в магазин..."):
+                try:
+                    data = st.session_state.parsed_result
+                    uploader = ShopScriptUploader(shop_token)
+                    product_id, logs = uploader.run(
+                        data['title'], data['taobao_url'],
+                        data['gallery_urls'][:5], data['skus']
+                    )
+                    st.success(f"✅ Товар #{product_id} создан (черновик)!")
+                    st.text('\n'.join(logs[-10:]))
+                except Exception as e:
+                    st.error(f"❌ Ошибка: {e}")
+                    import traceback
+                    st.error(traceback.format_exc())
+    else:
+        st.warning("⚠️ SHOP_API_TOKEN не найден. Загрузка в магазин недоступна.")
