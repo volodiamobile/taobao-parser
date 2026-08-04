@@ -57,40 +57,62 @@ class ShopScriptUploader:
         return resp['id']
 
     def upload_image(self, product_id, image_url, filename=None):
-        """Скачать картинку, нормализовать (800×800, белый фон, LANCZOS, WEBP q70) и загрузить в товар.
+        """Скачать картинку и загрузить в товар.
 
-        Обработка идентична ZIP-архиву (image_utils.process_image).
+        Формат вывода: 800×800 WEBP quality=70 (через image_utils.process_image).
+        При ЛЮБОМ сбое обработки — загружается оригинал, как было до правок (ничего не ломается).
         """
         import os
         import tempfile
-        from image_utils import process_image
 
-        # Скачиваем и приводим к 800×800 WEBP quality=70
-        tmp_dir = tempfile.mkdtemp()
-        tmp_path = os.path.join(tmp_dir, 'img')
+        tmp_dir = None
+        tmp_path = None
         try:
-            if not process_image(image_url, tmp_path):
-                raise Exception(f"Не удалось обработать изображение: {image_url}")
-            with open(tmp_path, 'rb') as f:
-                img_data = f.read()
+            from image_utils import process_image
+            tmp_dir = tempfile.mkdtemp()
+            tmp_path = os.path.join(tmp_dir, 'img')
+            if process_image(image_url, tmp_path):
+                with open(tmp_path, 'rb') as f:
+                    img_data = f.read()
+                base = filename or f'image_{int(time.time())}.webp'
+                base = os.path.basename(base)
+                if not base.lower().endswith('.webp'):
+                    base = os.path.splitext(base)[0] + '.webp'
+                mime = 'image/webp'
+            else:
+                raise RuntimeError('process_image вернул False')
+        except Exception:
+            # FALLBACK: как было до правок — оригинал без обработки
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://item.taobao.com/',
+            }
+            r = requests.get(image_url, headers=headers, timeout=30, stream=True)
+            r.raise_for_status()
+            img_data = r.content
+            if not filename:
+                filename = os.path.basename(image_url.split('?')[0])
+                if not filename or '.' not in filename:
+                    filename = f'image_{int(time.time())}.jpg'
+            ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'jpg'
+            mime_map = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'webp': 'image/webp'}
+            mime = mime_map.get(ext, 'image/jpeg')
+            base = filename
         finally:
-            try:
-                os.remove(tmp_path)
-                os.rmdir(tmp_dir)
-            except Exception:
-                pass
-
-        # Имя файла: всегда .webp (контент теперь всегда WEBP)
-        if not filename:
-            filename = f'image_{int(time.time())}.webp'
-        else:
-            filename = os.path.basename(filename)
-        if not filename.lower().endswith('.webp'):
-            filename = os.path.splitext(filename)[0] + '.webp'
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            if tmp_dir:
+                try:
+                    os.rmdir(tmp_dir)
+                except Exception:
+                    pass
 
         # Загружаем через API
         params = {'product_id': product_id}
-        files = {'file': (filename, img_data, 'image/webp')}
+        files = {'file': (base, img_data, mime)}
         resp = self._post('shop.product.images.add', params=params, files=files)
         return resp
 
