@@ -57,31 +57,40 @@ class ShopScriptUploader:
         return resp['id']
 
     def upload_image(self, product_id, image_url, filename=None):
-        """Скачать картинку по URL и загрузить в товар"""
-        import io
-        from PIL import Image
+        """Скачать картинку, нормализовать (800×800, белый фон, LANCZOS, WEBP q70) и загрузить в товар.
 
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': 'https://item.taobao.com/',
-        }
-        r = requests.get(image_url, headers=headers, timeout=30, stream=True)
-        r.raise_for_status()
+        Обработка идентична ZIP-архиву (image_utils.process_image).
+        """
+        import os
+        import tempfile
+        from image_utils import process_image
 
-        img_data = r.content
+        # Скачиваем и приводим к 800×800 WEBP quality=70
+        tmp_dir = tempfile.mkdtemp()
+        tmp_path = os.path.join(tmp_dir, 'img')
+        try:
+            if not process_image(image_url, tmp_path):
+                raise Exception(f"Не удалось обработать изображение: {image_url}")
+            with open(tmp_path, 'rb') as f:
+                img_data = f.read()
+        finally:
+            try:
+                os.remove(tmp_path)
+                os.rmdir(tmp_dir)
+            except Exception:
+                pass
+
+        # Имя файла: всегда .webp (контент теперь всегда WEBP)
         if not filename:
-            filename = os.path.basename(image_url.split('?')[0])
-            if not filename or '.' not in filename:
-                filename = f'image_{int(time.time())}.jpg'
-
-        # Определяем mime
-        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'jpg'
-        mime_map = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'webp': 'image/webp'}
-        mime = mime_map.get(ext, 'image/jpeg')
+            filename = f'image_{int(time.time())}.webp'
+        else:
+            filename = os.path.basename(filename)
+        if not filename.lower().endswith('.webp'):
+            filename = os.path.splitext(filename)[0] + '.webp'
 
         # Загружаем через API
         params = {'product_id': product_id}
-        files = {'file': (filename, img_data, mime)}
+        files = {'file': (filename, img_data, 'image/webp')}
         resp = self._post('shop.product.images.add', params=params, files=files)
         return resp
 

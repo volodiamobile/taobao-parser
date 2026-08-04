@@ -70,7 +70,7 @@ if st.session_state.get('parsed_result'):
                     uploader = ShopScriptUploader(shop_token)
                     product_id, logs = uploader.run(
                         data['title'], data['taobao_url'],
-                        data['gallery_urls'][:5], data['skus']
+                        data['gallery_urls'], data['skus']
                     )
                     st.success(f"✅ Товар #{product_id} создан (черновик)!")
                     st.text('\n'.join(logs[-10:]))

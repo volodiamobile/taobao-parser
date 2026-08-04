@@ -15,11 +15,7 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 if not RAPIDAPI_KEY or not DEEPSEEK_API_KEY:
     raise ValueError("❌ Отсутствуют API-ключи.")
 
-IMAGE_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Referer": "https://item.taobao.com/",
-    "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
-}
+from image_utils import process_image
 
 def extract_product_id(url):
     match = re.search(r'[?&]id=(\d+)', url)
@@ -68,50 +64,6 @@ def extract_images_from_html(html):
             urls.append(url)
     return urls
 
-def process_image(url, filepath):
-    try:
-        if url.startswith('//'):
-            url = 'https:' + url
-        elif url.startswith('http:'):
-            url = url.replace('http:', 'https:')
-
-        response = requests.get(url, timeout=15, stream=True, headers=IMAGE_HEADERS)
-        response.raise_for_status()
-
-        content_type = response.headers.get('Content-Type', '')
-        if not content_type.startswith('image/'):
-            return False
-
-        temp_file = filepath + ".tmp.jpg"
-        with open(temp_file, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-
-        img = Image.open(temp_file)
-        img.verify()
-        img = Image.open(temp_file)
-
-        target_size = 800
-        width, height = img.size
-        scale = target_size / max(width, height)
-        new_width = int(width * scale)
-        new_height = int(height * scale)
-        img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-        canvas = Image.new('RGB', (target_size, target_size), (255, 255, 255))
-        x = (target_size - new_width) // 2
-        y = (target_size - new_height) // 2
-
-        if img_resized.mode == 'RGBA':
-            canvas.paste(img_resized, (x, y), img_resized)
-        else:
-            canvas.paste(img_resized.convert('RGB'), (x, y))
-
-        canvas.save(filepath, "WEBP", quality=85)
-        os.remove(temp_file)
-        return True
-    except:
-        return False
 
 def detect_item_type(product_data, title, original_title):
     root_path = product_data.get("RootPath", {}).get("Content", [])
@@ -157,7 +109,7 @@ def translate_with_deepseek(text, api_key):
 
 Верни ТОЛЬКО перевод, без пояснений."""
         
-        payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 200}
+        payload = {"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 200}
         response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=10)
         if response.status_code == 200:
             raw = response.json()["choices"][0]["message"]["content"]
@@ -216,7 +168,7 @@ def run_parser(product_url, progress_callback=None):
 ВАЖНО: Придумай НОВОЕ, УНИКАЛЬНОЕ название модели — итальянское или английское слово, передающее стиль люкс. 
 НЕ используй распространённые названия (Milano, Roma, Venezia, Bellagio, Capri, Firenze, Verona).
 Верни ТОЛЬКО готовое название."""
-            payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.9, "max_tokens": 120}
+            payload = {"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": prompt}], "temperature": 0.9, "max_tokens": 120}
             response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
             if response.status_code == 200:
                 fixed_title = response.json()["choices"][0]["message"]["content"].strip()
