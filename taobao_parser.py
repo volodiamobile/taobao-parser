@@ -164,7 +164,9 @@ def translate_with_deepseek(text, api_key):
         response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=10)
         if response.status_code == 200:
             raw = response.json()["choices"][0]["message"]["content"]
-            return re.sub(r'\s+', ' ', raw).strip()
+            translated = re.sub(r'\s+', ' ', raw).strip()
+            if translated:
+                return translated
     except:
         pass
     return text
@@ -225,6 +227,10 @@ def run_parser(product_url, progress_callback=None):
                 fixed_title = response.json()["choices"][0]["message"]["content"].strip()
         except:
             pass
+
+    # Фикс 13.08: если DeepSeek вернул 200 с пустым content — не отправлять пустое name в магазин
+    if not fixed_title or not fixed_title.strip():
+        fixed_title = title or "Нет названия"
 
     log(f"📦 Название: {fixed_title[:50]}...")
 
