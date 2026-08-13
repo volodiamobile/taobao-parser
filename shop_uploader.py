@@ -40,7 +40,7 @@ class ShopScriptUploader:
     def create_product(self, title, taobao_url, skus_data, currency='CNY', type_id=30):
         """Создать товар-черновик"""
         data = {
-            'name': title or 'Без названия',
+            'name': title,
             'status': 0,  # черновик
             'currency': currency,
             'type_id': type_id,
