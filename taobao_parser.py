@@ -206,25 +206,8 @@ def run_parser(product_url, progress_callback=None):
     detected_type = detect_item_type(product_data.get("Result", {}), title, original_title)
     log(f"🔍 Определён тип товара: {detected_type or 'не определён'}")
 
-    # --- Переводим название товара с УНИКАЛЬНЫМ названием модели ---
+    # --- Название товара: Title из API (русский, DeepSeek отключён по команде 13.08) ---
     fixed_title = title
-    if original_title:
-        type_hint = f"Это {detected_type}." if detected_type else ""
-        try:
-            headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-            prompt = f"""Переведи на русский язык и добавь УНИКАЛЬНОЕ название модели.
-Оригинал: '{original_title}'
-{type_hint}
-Формат: [Русское название] [Model Name]
-ВАЖНО: Придумай НОВОЕ, УНИКАЛЬНОЕ название модели — итальянское или английское слово, передающее стиль люкс. 
-НЕ используй распространённые названия (Milano, Roma, Venezia, Bellagio, Capri, Firenze, Verona).
-Верни ТОЛЬКО готовое название."""
-            payload = {"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": prompt}], "temperature": 0.9, "max_tokens": 120}
-            response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
-            if response.status_code == 200:
-                fixed_title = response.json()["choices"][0]["message"]["content"].strip()
-        except:
-            pass
 
     log(f"📦 Название: {fixed_title[:50]}...")
 
@@ -233,7 +216,7 @@ def run_parser(product_url, progress_callback=None):
     for attr in all_attributes:
         vid = attr.get("Vid", "")
         if vid:
-            original_name = attr.get('OriginalValue') or attr.get('Value') or ''
+            original_name = attr.get('Value') or attr.get('OriginalValue') or ''
             original_name = re.sub(r'[【\[\]】]', '', original_name).strip()
             if original_name:
                 vid_to_name[vid] = original_name
@@ -279,11 +262,8 @@ def run_parser(product_url, progress_callback=None):
             if not image_url and vid in vid_to_image:
                 image_url = vid_to_image[vid]
         
-        # Переводим названия SKU с китайского на русский
-        translated_parts = []
-        for part in parts:
-            translated_parts.append(translate_with_deepseek(part, DEEPSEEK_API_KEY))
-        sku_name = ', '.join(translated_parts) if translated_parts else f'Артикул {len(real_skus)+1}'
+        # Название SKU: русский Value из API (DeepSeek отключён по команде 13.08)
+        sku_name = ', '.join(parts) if parts else f'Артикул {len(real_skus)+1}'
         
         real_skus.append({
             'id': sku_id,
@@ -298,7 +278,7 @@ def run_parser(product_url, progress_callback=None):
         for attr in all_attributes:
             if attr.get("IsConfigurator"):
                 vid = attr.get("Vid", "")
-                original_name = attr.get('OriginalValue') or attr.get('Value') or ''
+                original_name = attr.get('Value') or attr.get('OriginalValue') or ''
                 original_name = re.sub(r'[【\[\]】]', '', original_name).strip()
                 if not original_name:
                     continue
