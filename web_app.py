@@ -1,7 +1,7 @@
 import streamlit as st
 import os
 import json
-from taobao_parser import run_parser
+from taobao_parser import run_parser, extract_url_from_text
 from shop_uploader import ShopScriptUploader
 
 st.set_page_config(page_title="Taobao/Tmall Parser", page_icon="🛒", layout="wide")
@@ -33,7 +33,9 @@ url = st.text_input("Ссылка на товар Taobao/Tmall:", placeholder="h
 
 # === Обработка товара ===
 if st.button("🚀 Обработать товар", type="primary", disabled=not url):
-    if "taobao.com" not in url and "tmall.com" not in url:
+    # Поддержка мобильных шары: извлекаем URL из текста, если вставлен текст
+    processed_url = extract_url_from_text(url) or url
+    if not any(host in processed_url for host in ("taobao.com", "tmall.com", "m.tb.cn", "tb.cn", "s.click.taobao.com", "world.taobao.com")):
         st.error("❌ Ссылка должна быть на сайт Taobao или Tmall.")
     else:
         log_container = st.empty()
@@ -44,7 +46,7 @@ if st.button("🚀 Обработать товар", type="primary", disabled=no
             log_container.text("\n".join(logs[-20:]))
         
         with st.spinner("Идет обработка, подождите..."):
-            result = run_parser(url, progress_callback=log_callback)
+            result = run_parser(processed_url, progress_callback=log_callback)
             
             if result and result.get('zip_path') and os.path.exists(result['zip_path']):
                 st.success("✅ Обработка завершена!")

@@ -21,13 +21,55 @@ IMAGE_HEADERS = {
     "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
 }
 
+def extract_url_from_text(text):
+    """Извлечь первую HTTP(S)-ссылку из произвольного текста (шара из приложения Taobao).
+    Пример: '【淘宝】https://m.tb.cn/h.XXX?tk=YYY CZ0001 ...' → https://m.tb.cn/h.XXX?tk=YYY"""
+    if not text:
+        return None
+    match = re.search(r'https?://[^\s]+', text)
+    return match.group(0) if match else None
+
+
 def extract_product_id(url):
+    """Извлечь ID товара из URL.
+    Поддерживает: item.taobao.com/item.htm?id=..., detail.tmall.com/item.htm?id=...,
+    /item/NNN.htm, а также короткие ссылки-редиректы (m.tb.cn, tb.cn, s.click.taobao.com) —
+    раскрывает редирект до финального URL и повторяет поиск ID.
+    """
+    # Прямой поиск ID
     match = re.search(r'[?&]id=(\d+)', url)
     if match:
         return match.group(1)
     match = re.search(r'/item/(\d+)\.htm', url)
     if match:
         return match.group(1)
+
+    # Короткие/редирект-ссылки — раскрываем до финального URL
+    if any(host in url for host in ('m.tb.cn', 'tb.cn', 's.click.taobao.com', 'click.mz.simba.taobao.com')):
+        try:
+            resp = requests.get(url, allow_redirects=True, timeout=15, headers={
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"
+            })
+            # 1) HTTP-редирект (если есть)
+            final_url = resp.url or url
+            match = re.search(r'[?&]id=(\d+)', final_url)
+            if match:
+                return match.group(1)
+            match = re.search(r'/item/(\d+)\.htm', final_url)
+            if match:
+                return match.group(1)
+            # 2) m.tb.cn отдаёт JS-редирект: целевой URL зашит в HTML как  var url = "..."
+            m = re.search(r'var\s+url\s*=\s*["\'](https?://[^"\'\s]+)["\']', resp.text)
+            if m:
+                target = m.group(1)
+                match = re.search(r'[?&]id=(\d+)', target)
+                if match:
+                    return match.group(1)
+                match = re.search(r'/item/(\d+)\.htm', target)
+                if match:
+                    return match.group(1)
+        except Exception:
+            pass
     return None
 
 def get_taobao_product(item_id):
