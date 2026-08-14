@@ -232,6 +232,9 @@ def run_parser(product_url, progress_callback=None):
     if not product_data:
         log("Не удалось получить данные.")
         return None
+    if product_data.get("ErrorCode"):
+        log(f"❌ API: {product_data.get('ErrorDescription', 'ошибка API')}")
+        return None
 
     item = product_data.get("Result", {}).get("Item", {})
     vendor = product_data.get("Result", {}).get("Vendor", {})
