@@ -31,6 +31,13 @@ if st.sidebar.button("🚪 Выйти"):
 
 url = st.text_input("Ссылка на товар Taobao/Tmall:", placeholder="https://item.taobao.com/item.htm?id=... или https://detail.tmall.com/item.htm?id=...")
 
+sku_order_text = st.text_area(
+    "Порядок артикулов из магазина (необязательно):",
+    placeholder="Вставьте список артикулов как в выпадающем списке Taobao, по одному в строке.\nПример:\n1.3米多宝阁一个 金花梨木\n1米多宝阁一个 金花梨木",
+    height=120,
+)
+sku_order = [l.strip() for l in (sku_order_text or "").splitlines() if l.strip()]
+
 # === Обработка товара ===
 if st.button("🚀 Обработать товар", type="primary", disabled=not url):
     # Поддержка мобильных шары: извлекаем URL из текста, если вставлен текст
@@ -46,7 +53,7 @@ if st.button("🚀 Обработать товар", type="primary", disabled=no
             log_container.text("\n".join(logs[-20:]))
         
         with st.spinner("Идет обработка, подождите..."):
-            result = run_parser(processed_url, progress_callback=log_callback)
+            result = run_parser(processed_url, progress_callback=log_callback, sku_order=sku_order)
             
             if result and result.get('zip_path') and os.path.exists(result['zip_path']):
                 st.success("✅ Обработка завершена!")

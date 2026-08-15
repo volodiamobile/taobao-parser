@@ -211,7 +211,7 @@ def translate_with_deepseek(text, api_key):
         pass
     return text
 
-def run_parser(product_url, progress_callback=None):
+def run_parser(product_url, progress_callback=None, sku_order=None):
     def log(msg):
         print(msg)
         if progress_callback:
@@ -259,6 +259,7 @@ def run_parser(product_url, progress_callback=None):
 
     # --- Строим словари ---
     vid_to_name = {}
+    vid_to_cn = {}
     for attr in all_attributes:
         vid = attr.get("Vid", "")
         if vid:
@@ -266,6 +267,10 @@ def run_parser(product_url, progress_callback=None):
             original_name = re.sub(r'[【\[\]】]', '', original_name).strip()
             if original_name:
                 vid_to_name[vid] = original_name
+            cn_name = attr.get('OriginalValue') or attr.get('Value') or ''
+            cn_name = re.sub(r'[【\[\]】]', '', cn_name).strip()
+            if cn_name:
+                vid_to_cn[vid] = cn_name
 
     vid_to_image = {}
     for attr in all_attributes:
@@ -300,11 +305,14 @@ def run_parser(product_url, progress_callback=None):
             price_cny = cfg_item.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price", 0)
         
         parts = []
+        parts_cn = []
         image_url = ""
         for cfg in configurators:
             vid = cfg.get("Vid", "")
             if vid in vid_to_name:
                 parts.append(vid_to_name[vid])
+            if vid in vid_to_cn:
+                parts_cn.append(vid_to_cn[vid])
             if not image_url and vid in vid_to_image:
                 image_url = vid_to_image[vid]
         
@@ -315,7 +323,8 @@ def run_parser(product_url, progress_callback=None):
             'id': sku_id,
             'name': sku_name,
             'price': price_cny,
-            'image_url': image_url
+            'image_url': image_url,
+            'name_cn': ' '.join(parts_cn)
         })
 
     # --- FALLBACK: Если нет артикулов — берём из Attributes ---
@@ -334,8 +343,35 @@ def run_parser(product_url, progress_callback=None):
                     'id': vid,
                     'name': original_name,
                     'price': price,
-                    'image_url': image_url
+                    'image_url': image_url,
+                    'name_cn': original_name
                 })
+
+    # Сортировка по порядку магазина (если передан sku_order — список названий из выпадающего списка Taobao)
+    if sku_order:
+        def _norm(s):
+            s = re.sub(r'\s+', '', s or '')
+            return s.replace('（', '').replace('）', '').replace('(', '').replace(')', '')
+        _idx = {}
+        for sku in real_skus:
+            key = _norm(sku.get('name_cn', ''))
+            if key and key not in _idx:
+                _idx[key] = sku
+        _ordered = []
+        _seen = set()
+        for line in sku_order:
+            line = line.strip()
+            if not line:
+                continue
+            key = _norm(line)
+            if key in _idx and key not in _seen:
+                _ordered.append(_idx[key])
+                _seen.add(key)
+        for sku in real_skus:
+            if _norm(sku.get('name_cn', '')) not in _seen:
+                _ordered.append(sku)
+        real_skus = _ordered
+        log(f"📋 Порядок из магазина применён: {len(_ordered)} артикулов")
 
     log(f"🏷️ Артикулов: {len(real_skus)}")
 
