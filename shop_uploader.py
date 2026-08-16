@@ -15,6 +15,9 @@ import re
 import time
 
 class ShopScriptUploader:
+    # Наборы Shop-Script, в которые товар добавляется СРАЗУ при создании (16.08.2026, команда Вована)
+    SET_IDS = ['GoogleMC', 'FacebookPro', 'pinterest', 'Y.Market']
+
     def __init__(self, api_token, api_url='https://e-mall.su/api.php/', brand='E-Mall'):
         self.token = api_token
         self.api_url = api_url
@@ -128,6 +131,18 @@ class ShopScriptUploader:
             raise Exception(f"Ошибка установки фич: {resp.get('error_description', resp['error'])}")
         return resp
 
+    def apply_sets(self, product_id, set_ids):
+        """Добавить товар в наборы (static sets).
+
+        Проверено 16.08.2026: shop.product.add НЕ применяет sets (молча игнорирует);
+        shop.product.update с sets[i][id]=<set_id> применяет (id — в query, по уроку 15.08).
+        """
+        data = {f'sets[{i}][id]': sid for i, sid in enumerate(set_ids)}
+        resp = self._post('shop.product.update', params={'id': product_id}, data=data)
+        if 'error' in resp and resp['error']:
+            raise Exception(f"Ошибка добавления в наборы: {resp.get('error_description', resp['error'])}")
+        return resp
+
     def run(self, title, taobao_url, gallery_urls, skus_data):
         """Полный цикл: товар → галерея → SKU → фичи"""
         log = []
@@ -138,6 +153,26 @@ class ShopScriptUploader:
         l(f'📦 Создание товара: {title[:50]}...')
         product_id = self.create_product(title, taobao_url, skus_data)
         l(f'✅ Товар создан: id={product_id}')
+
+        # Сразу добавляем в наборы (GoogleMC, FacebookPro, pinterest, Y.Market)
+        try:
+            self.apply_sets(product_id, self.SET_IDS)
+            l(f"✅ Наборы применены: {len(self.SET_IDS)} ({', '.join(self.SET_IDS)})")
+        except Exception as e:
+            l(f'⚠️ Наборы не применились: {e}')
+
+        # Получаем реальные id артикулов Shop-Script (порядок = порядку создания)
+        # Нужны для привязки картинок: API принимает id артикула магазина, НЕ таобао-id
+        try:
+            _info = self._get('shop.product.getInfo', {'id': product_id})
+            _p = _info.get('product', _info)
+            _shop_skus = _p.get('skus', [])
+            for _i, _sku in enumerate(skus_data):
+                if _i < len(_shop_skus):
+                    _sku['shop_sku_id'] = _shop_skus[_i]['id']
+            l(f'🔗 Артикулы Shop-Script: {len(_shop_skus)} шт')
+        except Exception as e:
+            l(f'⚠️ Не удалось получить id артикулов: {e}')
 
         # Загружаем галерею (главные картинки)
         l(f'🖼 Загрузка галереи ({len(gallery_urls)} шт)...')
@@ -165,6 +200,18 @@ class ShopScriptUploader:
                     if resp.get('id'):
                         sku['image_id'] = resp['id']
                         l(f'  ✅ sku_{i+1:02d}: image_id={resp["id"]}')
+                        # Привязка картинки к артикулу (иначе артикул остаётся без картинки)
+                        try:
+                            # id — в query (иначе 400 "недостаточно id"), image_id — в body
+                            _shop_sku_id = sku.get('shop_sku_id')
+                            if not _shop_sku_id:
+                                l(f'  ⚠️ sku_{i+1:02d}: нет shop_sku_id, привязка пропущена')
+                            else:
+                                upd = self._post('shop.product.skus.update', params={'id': _shop_sku_id}, data={'image_id': resp['id']})
+                                if upd.get('error'):
+                                    l(f'  ⚠️ sku_{i+1:02d}: привязка не удалась: {upd.get("error_description", upd["error"])}')
+                        except Exception as e:
+                            l(f'  ⚠️ sku_{i+1:02d}: привязка: {e}')
                     else:
                         l(f'  ⚠️ sku_{i+1:02d}: no id')
                 except Exception as e:

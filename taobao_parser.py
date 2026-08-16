@@ -347,6 +347,36 @@ def run_parser(product_url, progress_callback=None, sku_order=None):
                     'name_cn': original_name
                 })
 
+    # --- Авто-порядок по странице: главный атрибут «颜色分类» (Классификация цветов)
+    # содержит список вариантов в том порядке, как они идут на странице Taobao.
+    # Поле «Порядок артикулов» в web_app становится необязательным.
+    def _apply_page_order(skus, attributes):
+        master = None
+        for attr in attributes:
+            if attr.get("IsConfigurator"):
+                continue
+            pid = str(attr.get("Pid", ""))
+            prop = str(attr.get("PropertyName", ""))
+            if pid in ("颜色分类", "Классификация цветов") or prop in ("颜色分类", "Классификация цветов"):
+                val = attr.get("OriginalValue") or attr.get("Value") or ""
+                if len(val.split()) >= 2:
+                    master = val
+                    break
+        if not master:
+            return skus
+        master_norm = re.sub(r'[\s（）()【\[\]】]', '', master)
+        for sku in skus:
+            key = re.sub(r'[\s（）()【\[\]】]', '', sku.get('name_cn', ''))
+            pos = master_norm.find(key) if key else -1
+            sku['_page_pos'] = pos if pos >= 0 else 10 ** 9
+        skus.sort(key=lambda s: s['_page_pos'])
+        for sku in skus:
+            sku.pop('_page_pos', None)
+        log("📋 Порядок артикулов по странице (颜色分类) применён")
+        return skus
+
+    real_skus = _apply_page_order(real_skus, all_attributes)
+
     # Сортировка по порядку магазина (если передан sku_order — список названий из выпадающего списка Taobao)
     if sku_order:
         def _norm(s):
@@ -458,7 +488,8 @@ def run_parser(product_url, progress_callback=None, sku_order=None):
     result = {
         'zip_path': zip_path,
         'title': fixed_title,
-        'taobao_url': product_url,
+        # Обычная (не мобильная) ссылка на товар: из API, fallback — по id.
+        'taobao_url': item.get('TaobaoItemUrl') or f'https://item.taobao.com/item.htm?id={product_id}',
         'product_id': product_id,
         'skus': real_skus,
         'gallery_urls': gallery,

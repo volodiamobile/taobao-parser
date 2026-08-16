@@ -77,9 +77,13 @@ if st.session_state.get('parsed_result'):
                 try:
                     data = st.session_state.parsed_result
                     uploader = ShopScriptUploader(shop_token)
+                    # ВСЕ картинки: главные + из описания, без дублей (порядок сохраняется)
+                    all_images = list(dict.fromkeys(
+                        (data.get('gallery_urls') or []) + (data.get('desc_images') or [])
+                    ))
                     product_id, logs = uploader.run(
                         data['title'], data['taobao_url'],
-                        data['gallery_urls'][:5], data['skus']
+                        all_images, data['skus']
                     )
                     st.success(f"✅ Товар #{product_id} создан (черновик)!")
                     st.text('\n'.join(logs[-10:]))
