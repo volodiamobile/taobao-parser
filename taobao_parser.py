@@ -4,6 +4,7 @@ import os
 import re
 import zipfile
 import tempfile
+import time
 from datetime import datetime
 from PIL import Image
 
@@ -117,8 +118,17 @@ def process_image(url, filepath):
         elif url.startswith('http:'):
             url = url.replace('http:', 'https:')
 
-        response = requests.get(url, timeout=15, stream=True, headers=IMAGE_HEADERS)
-        response.raise_for_status()
+        # Повтор при разовом сбое сети (телефон/мобильный интернет): 3 попытки с паузой
+        response = None
+        for attempt in range(3):
+            try:
+                response = requests.get(url, timeout=15, stream=True, headers=IMAGE_HEADERS)
+                response.raise_for_status()
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+                time.sleep(2)
 
         content_type = response.headers.get('Content-Type', '')
         if not content_type.startswith('image/'):

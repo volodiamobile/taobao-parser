@@ -90,8 +90,17 @@ class ShopScriptUploader:
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Referer': 'https://item.taobao.com/',
             }
-            r = requests.get(image_url, headers=headers, timeout=30, stream=True)
-            r.raise_for_status()
+            # Повтор при разовом сбое сети: 3 попытки с паузой
+            r = None
+            for attempt in range(3):
+                try:
+                    r = requests.get(image_url, headers=headers, timeout=30, stream=True)
+                    r.raise_for_status()
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise
+                    time.sleep(2)
             img_data = r.content
             if not filename:
                 filename = os.path.basename(image_url.split('?')[0])
