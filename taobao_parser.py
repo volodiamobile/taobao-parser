@@ -143,7 +143,7 @@ def process_image(url, filepath):
         img.verify()
         img = Image.open(temp_file)
 
-        target_size = 800
+        target_size = 1200
         width, height = img.size
         scale = target_size / max(width, height)
         new_width = int(width * scale)

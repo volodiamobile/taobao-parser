@@ -2,7 +2,7 @@
 image_utils.py — единая обработка изображений для taobao_parser и shop_uploader.
 
 ВСЕ картинки (ZIP-архив и загрузка в магазин через API) приводятся одинаково:
-- Размер: 800×800 (квадрат, белый фон, LANCZOS)
+- Размер: 1200×1200 (квадрат, белый фон, LANCZOS)
 - Формат: WEBP, quality=70
 """
 import os
@@ -10,7 +10,7 @@ import os
 import requests
 from PIL import Image
 
-TARGET_SIZE = 800
+TARGET_SIZE = 1200
 WEBP_QUALITY = 70
 
 IMAGE_HEADERS = {
@@ -21,7 +21,7 @@ IMAGE_HEADERS = {
 
 
 def process_image(url, filepath):
-    """Скачать изображение по URL и привести к 800×800 WEBP quality=70.
+    """Скачать изображение по URL и привести к 1200×1200 WEBP quality=70.
 
     Возвращает True при успехе, False при любой ошибке.
     """

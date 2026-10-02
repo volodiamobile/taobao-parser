@@ -62,7 +62,7 @@ class ShopScriptUploader:
     def upload_image(self, product_id, image_url, filename=None):
         """Скачать картинку и загрузить в товар.
 
-        Формат вывода: 800×800 WEBP quality=70 (через image_utils.process_image).
+        Формат вывода: 1200×1200 WEBP quality=70 (через image_utils.process_image).
         При ЛЮБОМ сбое обработки — загружается оригинал, как было до правок (ничего не ломается).
         """
         import os
