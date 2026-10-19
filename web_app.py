@@ -25,6 +25,12 @@ if not st.session_state.authenticated:
 st.title("🛒 Парсер товаров Taobao/Tmall")
 st.markdown("Вставьте ссылку на товар и нажмите кнопку «Обработать»")
 
+try:
+    import usage_guard
+    st.sidebar.caption("Разборов сегодня: %d из %d (осталось %d)" % (usage_guard.used_today(), usage_guard.LIMIT, usage_guard.remaining_today()))
+except Exception:
+    pass
+
 if st.sidebar.button("🚪 Выйти"):
     st.session_state.authenticated = False
     st.rerun()

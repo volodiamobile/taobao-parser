@@ -77,6 +77,16 @@ def get_taobao_product(item_id):
     url = "https://toabao-open-api.p.rapidapi.com/BatchGetItemFullInfo"
     querystring = {"itemId": item_id, "language": "ru"}
     headers = {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
+    try:
+        import usage_guard
+        left = usage_guard.consume()
+        daily_limit = usage_guard.LIMIT
+    except Exception:
+        left, daily_limit = 1, 20
+    if left < 0:
+        raise RuntimeError(
+            "Дневной лимит разборов (%d в день) исчерпан — защита от перерасхода RapidAPI. Попробуйте завтра." % daily_limit
+        )
     response = requests.get(url, headers=headers, params=querystring, timeout=40)
     if response.status_code != 200:
         raise RuntimeError(
