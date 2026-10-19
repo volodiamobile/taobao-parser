@@ -77,8 +77,12 @@ def get_taobao_product(item_id):
     url = "https://toabao-open-api.p.rapidapi.com/BatchGetItemFullInfo"
     querystring = {"itemId": item_id, "language": "ru"}
     headers = {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
-    response = requests.get(url, headers=headers, params=querystring)
-    return response.json() if response.status_code == 200 else None
+    response = requests.get(url, headers=headers, params=querystring, timeout=40)
+    if response.status_code != 200:
+        raise RuntimeError(
+            "RapidAPI HTTP %s: %s" % (response.status_code, (response.text or "")[:300])
+        )
+    return response.json()
 
 def sanitize_filename(name):
     forbidden = '<>:"/\\|?*'
@@ -238,7 +242,11 @@ def run_parser(product_url, progress_callback=None, sku_order=None):
     log(f"📋 ID: {product_id}")
     log("🚀 Получаю данные...")
 
-    product_data = get_taobao_product(product_id)
+    try:
+        product_data = get_taobao_product(product_id)
+    except Exception as e:
+        log(f"❌ Ошибка API: {e}")
+        return None
     if not product_data:
         log("Не удалось получить данные.")
         return None
