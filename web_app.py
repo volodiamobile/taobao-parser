@@ -83,6 +83,11 @@ if st.session_state.get('parsed_result'):
             with st.spinner("Загрузка в магазин..."):
                 try:
                     data = st.session_state.parsed_result
+                    # нормализуем SKU: строки -> объекты {name, price}
+                    _skus = data.get('skus') or []
+                    if _skus and isinstance(_skus[0], str):
+                        _price = data.get('price') or 0
+                        data['skus'] = [{'name': s[:255], 'price': _price} for s in _skus if str(s).strip()]
                     uploader = ShopScriptUploader(shop_token)
                     # ВСЕ картинки: главные + из описания, без дублей (порядок сохраняется)
                     all_images = list(dict.fromkeys(
