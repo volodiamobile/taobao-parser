@@ -35,51 +35,37 @@ if st.sidebar.button("🚪 Выйти"):
     st.session_state.authenticated = False
     st.rerun()
 
-# === Разбор через локальный парсер (очередь заданий) ===
-import time as _time
-QUEUE_URL = "https://e-mall.su/taobao-queue/api.php"
-queue_token = os.environ.get("TAOBAO_QUEUE_TOKEN", st.secrets.get("TAOBAO_QUEUE_TOKEN", ""))
+url = st.text_input("Ссылка на товар Taobao/Tmall:", placeholder="https://item.taobao.com/item.htm?id=... или https://detail.tmall.com/item.htm?id=...")
 
-st.markdown("Вставьте ссылку — задание заберёт локальный парсер на ПК, результат появится здесь через 20–60 секунд.")
-
-url = st.text_input("Ссылка на товар Taobao/Tmall:", placeholder="https://item.taobao.com/item.htm?id=...")
-if not queue_token:
-    st.warning("Не задан TAOBAO_QUEUE_TOKEN в Secrets — разбор недоступен.")
-
-if st.button("Разобрать товар", type="primary", disabled=not (url and queue_token)):
-    import requests as _rq
-    try:
-        created = _rq.get(QUEUE_URL, params={"action": "create", "token": queue_token, "url": url}, timeout=30).json()
-        if not created.get("ok"):
-            st.error("Не удалось создать задание: %s" % created.get("error"))
-        else:
-            job_id = created["id"]
-            state, result = "new", None
-            with st.spinner("Локальный парсер собирает данные..."):
-                for _ in range(60):
-                    _time.sleep(2)
-                    got = _rq.get(QUEUE_URL, params={"action": "get", "token": queue_token, "id": job_id}, timeout=30).json()
-                    state = got.get("state")
-                    result = got.get("result")
-                    if state in ("done", "expired"):
-                        break
-            if state == "done" and result and not result.get("error"):
+# === Обработка товара ===
+if st.button("🚀 Обработать товар", type="primary", disabled=not url):
+    # Поддержка мобильных шары: извлекаем URL из текста, если вставлен текст
+    processed_url = extract_url_from_text(url) or url
+    if not any(host in processed_url for host in ("taobao.com", "tmall.com", "m.tb.cn", "tb.cn", "s.click.taobao.com", "world.taobao.com")):
+        st.error("❌ Ссылка должна быть на сайт Taobao или Tmall.")
+    else:
+        log_container = st.empty()
+        logs = []
+        
+        def log_callback(msg):
+            logs.append(msg)
+            log_container.text("\n".join(logs[-20:]))
+        
+        with st.spinner("Идет обработка, подождите..."):
+            result = run_parser(processed_url, progress_callback=log_callback)
+            
+            if result and result.get('zip_path') and os.path.exists(result['zip_path']):
+                st.success("✅ Обработка завершена!")
+                with open(result['zip_path'], "rb") as f:
+                    st.download_button(
+                        label="📥 Скачать ZIP-архив",
+                        data=f,
+                        file_name=os.path.basename(result['zip_path']),
+                        mime="application/zip"
+                    )
                 st.session_state.parsed_result = result
-                st.success("Готово: %s | картинок: %d | вариантов: %d" % (
-                    result.get("title", "?"), len(result.get("gallery_urls") or []), len(result.get("skus") or [])))
-                st.json({k: result.get(k) for k in ("item_id", "title", "price", "taobao_url")})
-                if result.get("zip_url"):
-                    try:
-                        _zb = _rq.get(result["zip_url"], timeout=120).content
-                        st.download_button("Скачать ZIP-архив", data=_zb, file_name=result["zip_url"].split("/")[-1], mime="application/zip")
-                    except Exception as _e:
-                        st.warning("ZIP готов, но не скачался: %s" % _e)
-            elif result and result.get("error"):
-                st.error("Парсер вернул ошибку: %s" % result.get("error"))
             else:
-                st.error("Парсер не ответил за 2 минуты (состояние: %s). Проверьте, что воркер на ПК запущен." % state)
-    except Exception as e:
-        st.error("Ошибка очереди: %s" % e)
+                st.error("❌ Ошибка при обработке товара")
 
 # === Загрузка в магазин (ВНЕ блока обработки!) ===
 if st.session_state.get('parsed_result'):
@@ -89,11 +75,6 @@ if st.session_state.get('parsed_result'):
             with st.spinner("Загрузка в магазин..."):
                 try:
                     data = st.session_state.parsed_result
-                    # нормализуем SKU: строки -> объекты {name, price}
-                    _skus = data.get('skus') or []
-                    if _skus and isinstance(_skus[0], str):
-                        _price = data.get('price') or 0
-                        data['skus'] = [{'name': s[:255], 'price': _price} for s in _skus if str(s).strip()]
                     uploader = ShopScriptUploader(shop_token)
                     # ВСЕ картинки: главные + из описания, без дублей (порядок сохраняется)
                     all_images = list(dict.fromkeys(
