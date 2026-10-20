@@ -75,17 +75,6 @@ if st.button("Разобрать товар", type="primary", disabled=not (url 
     except Exception as e:
         st.error("Ошибка очереди: %s" % e)
 
-st.markdown("---")
-st.caption("Резервный вариант: загрузить готовый JSON, собранный локально.")
-prepared_file = st.file_uploader("Подготовленный JSON товара", type=["json"])
-if prepared_file is not None:
-    try:
-        prepared = json.load(prepared_file)
-        st.session_state.parsed_result = prepared
-        st.success("Загружено: %s" % prepared.get("title", "?"))
-    except Exception as e:
-        st.error("Не удалось прочитать JSON: %s" % e)
-
 # === Загрузка в магазин (ВНЕ блока обработки!) ===
 if st.session_state.get('parsed_result'):
     shop_token = os.environ.get("SHOP_API_TOKEN", st.secrets.get("SHOP_API_TOKEN", ""))
