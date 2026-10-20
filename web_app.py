@@ -35,37 +35,18 @@ if st.sidebar.button("🚪 Выйти"):
     st.session_state.authenticated = False
     st.rerun()
 
-url = st.text_input("Ссылка на товар Taobao/Tmall:", placeholder="https://item.taobao.com/item.htm?id=... или https://detail.tmall.com/item.htm?id=...")
-
-# === Обработка товара ===
-if st.button("🚀 Обработать товар", type="primary", disabled=not url):
-    # Поддержка мобильных шары: извлекаем URL из текста, если вставлен текст
-    processed_url = extract_url_from_text(url) or url
-    if not any(host in processed_url for host in ("taobao.com", "tmall.com", "m.tb.cn", "tb.cn", "s.click.taobao.com", "world.taobao.com")):
-        st.error("❌ Ссылка должна быть на сайт Taobao или Tmall.")
-    else:
-        log_container = st.empty()
-        logs = []
-        
-        def log_callback(msg):
-            logs.append(msg)
-            log_container.text("\n".join(logs[-20:]))
-        
-        with st.spinner("Идет обработка, подождите..."):
-            result = run_parser(processed_url, progress_callback=log_callback)
-            
-            if result and result.get('zip_path') and os.path.exists(result['zip_path']):
-                st.success("✅ Обработка завершена!")
-                with open(result['zip_path'], "rb") as f:
-                    st.download_button(
-                        label="📥 Скачать ZIP-архив",
-                        data=f,
-                        file_name=os.path.basename(result['zip_path']),
-                        mime="application/zip"
-                    )
-                st.session_state.parsed_result = result
-            else:
-                st.error("❌ Ошибка при обработке товара")
+# === Локальный парсинг: сюда загружается готовый JSON с ПК ===
+st.info("Разбор выполняется локально на ПК (сессия Taobao). Загрузите сюда JSON из _tools/taobao-local/out/ — приложение только выкладывает товар в магазин.")
+prepared_file = st.file_uploader("Подготовленный JSON товара", type=["json"])
+if prepared_file is not None:
+    try:
+        prepared = json.load(prepared_file)
+        st.session_state.parsed_result = prepared
+        st.success("Загружено: %s | картинок: %d | вариантов: %d" % (
+            prepared.get('title', '?'), len(prepared.get('gallery_urls') or []), len(prepared.get('skus') or [])))
+        st.json({k: prepared.get(k) for k in ('item_id', 'title', 'price', 'taobao_url')})
+    except Exception as e:
+        st.error("Не удалось прочитать JSON: %s" % e)
 
 # === Загрузка в магазин (ВНЕ блока обработки!) ===
 if st.session_state.get('parsed_result'):
