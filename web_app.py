@@ -35,16 +35,54 @@ if st.sidebar.button("🚪 Выйти"):
     st.session_state.authenticated = False
     st.rerun()
 
-# === Локальный парсинг: сюда загружается готовый JSON с ПК ===
-st.info("Разбор выполняется локально на ПК (сессия Taobao). Загрузите сюда JSON из _tools/taobao-local/out/ — приложение только выкладывает товар в магазин.")
+# === Разбор через локальный парсер (очередь заданий) ===
+import time as _time
+QUEUE_URL = "https://e-mall.su/taobao-queue/api.php"
+queue_token = os.environ.get("TAOBAO_QUEUE_TOKEN", st.secrets.get("TAOBAO_QUEUE_TOKEN", ""))
+
+st.markdown("Вставьте ссылку — задание заберёт локальный парсер на ПК, результат появится здесь через 20–60 секунд.")
+
+url = st.text_input("Ссылка на товар Taobao/Tmall:", placeholder="https://item.taobao.com/item.htm?id=...")
+if not queue_token:
+    st.warning("Не задан TAOBAO_QUEUE_TOKEN в Secrets — разбор недоступен.")
+
+if st.button("Разобрать товар", type="primary", disabled=not (url and queue_token)):
+    import requests as _rq
+    try:
+        created = _rq.get(QUEUE_URL, params={"action": "create", "token": queue_token, "url": url}, timeout=30).json()
+        if not created.get("ok"):
+            st.error("Не удалось создать задание: %s" % created.get("error"))
+        else:
+            job_id = created["id"]
+            state, result = "new", None
+            with st.spinner("Локальный парсер собирает данные..."):
+                for _ in range(60):
+                    _time.sleep(2)
+                    got = _rq.get(QUEUE_URL, params={"action": "get", "token": queue_token, "id": job_id}, timeout=30).json()
+                    state = got.get("state")
+                    result = got.get("result")
+                    if state in ("done", "expired"):
+                        break
+            if state == "done" and result and not result.get("error"):
+                st.session_state.parsed_result = result
+                st.success("Готово: %s | картинок: %d | вариантов: %d" % (
+                    result.get("title", "?"), len(result.get("gallery_urls") or []), len(result.get("skus") or [])))
+                st.json({k: result.get(k) for k in ("item_id", "title", "price", "taobao_url")})
+            elif result and result.get("error"):
+                st.error("Парсер вернул ошибку: %s" % result.get("error"))
+            else:
+                st.error("Парсер не ответил за 2 минуты (состояние: %s). Проверьте, что воркер на ПК запущен." % state)
+    except Exception as e:
+        st.error("Ошибка очереди: %s" % e)
+
+st.markdown("---")
+st.caption("Резервный вариант: загрузить готовый JSON, собранный локально.")
 prepared_file = st.file_uploader("Подготовленный JSON товара", type=["json"])
 if prepared_file is not None:
     try:
         prepared = json.load(prepared_file)
         st.session_state.parsed_result = prepared
-        st.success("Загружено: %s | картинок: %d | вариантов: %d" % (
-            prepared.get('title', '?'), len(prepared.get('gallery_urls') or []), len(prepared.get('skus') or [])))
-        st.json({k: prepared.get(k) for k in ('item_id', 'title', 'price', 'taobao_url')})
+        st.success("Загружено: %s" % prepared.get("title", "?"))
     except Exception as e:
         st.error("Не удалось прочитать JSON: %s" % e)
 
