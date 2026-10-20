@@ -68,6 +68,12 @@ if st.button("Разобрать товар", type="primary", disabled=not (url 
                 st.success("Готово: %s | картинок: %d | вариантов: %d" % (
                     result.get("title", "?"), len(result.get("gallery_urls") or []), len(result.get("skus") or [])))
                 st.json({k: result.get(k) for k in ("item_id", "title", "price", "taobao_url")})
+                if result.get("zip_url"):
+                    try:
+                        _zb = _rq.get(result["zip_url"], timeout=120).content
+                        st.download_button("Скачать ZIP-архив", data=_zb, file_name=result["zip_url"].split("/")[-1], mime="application/zip")
+                    except Exception as _e:
+                        st.warning("ZIP готов, но не скачался: %s" % _e)
             elif result and result.get("error"):
                 st.error("Парсер вернул ошибку: %s" % result.get("error"))
             else:
