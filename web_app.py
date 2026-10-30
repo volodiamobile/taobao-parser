@@ -26,10 +26,23 @@ st.title("🛒 Парсер товаров Taobao/Tmall")
 st.markdown("Вставьте ссылку на товар и нажмите кнопку «Обработать»")
 
 try:
-    import usage_guard
-    st.sidebar.caption("Разборов сегодня: %d из %d (осталось %d)" % (usage_guard.used_today(), usage_guard.LIMIT, usage_guard.remaining_today()))
+    # ключ для облака (Streamlit secrets) — если пул аккаунтов там недоступен
+    if not os.environ.get("RAPIDAPI_KEY"):
+        try:
+            os.environ["RAPIDAPI_KEY"] = st.secrets.get("RAPIDAPI_KEY", "")
+        except Exception:
+            pass
+    import api_pool
+    _accs = [a for a in api_pool.load_accounts()["accounts"] if a.get("enabled", True)]
+    if _accs:
+        _left = sum(api_pool.remaining_for(a["id"]) or 0 for a in _accs)
+        _lim = sum(int(a.get("limit") or 20) for a in _accs)
+        st.sidebar.caption("Запросов сегодня: осталось %d из %d (%d акк.)" % (_left, _lim, len(_accs)))
+    else:
+        st.sidebar.caption("Пул аккаунтов не настроен — работа на одном ключе")
 except Exception:
     pass
+
 
 if st.sidebar.button("🚪 Выйти"):
     st.session_state.authenticated = False
