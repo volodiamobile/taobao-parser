@@ -10,8 +10,52 @@ from PIL import Image
 
 # --- 1. Настройки API ---
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
-RAPIDAPI_HOST = "toabao-open-api.p.rapidapi.com"
+RAPIDAPI_HOST = "taobao-tmall1.p.rapidapi.com"
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+
+
+# --- Пул аккаунтов RapidAPI (счётчики + автопереключение) ---
+try:
+    import api_pool as _pool
+except Exception:
+    _pool = None
+
+
+def _pool_next_key(exclude=None):
+    if _pool is not None:
+        acc, _ = _pool.pick_account(need=1, exclude=exclude)
+        if acc:
+            return acc["id"], acc["key"].strip()
+    if RAPIDAPI_KEY and not exclude:
+        return "env", RAPIDAPI_KEY
+    raise RuntimeError(_pool.describe_exhausted() if _pool else "Не задан RAPIDAPI_KEY")
+
+
+def _pool_record(acc_id, status, headers=None, exhausted=False, count=True):
+    if _pool is not None and acc_id != "env":
+        try:
+            _pool.record_call(acc_id, status=status, headers=headers, exhausted=exhausted, count=count)
+        except Exception:
+            pass
+
+
+def _pool_left(acc_id):
+    if _pool is None or acc_id == "env":
+        return None
+    try:
+        return _pool.remaining_for(acc_id)
+    except Exception:
+        return None
+
+
+def _pool_proxy():
+    if _pool is None:
+        return None
+    try:
+        return _pool.get_proxy()
+    except Exception:
+        return None
+
 
 if not RAPIDAPI_KEY or not DEEPSEEK_API_KEY:
     raise ValueError("❌ Отсутствуют API-ключи.")
@@ -74,25 +118,47 @@ def extract_product_id(url):
     return None
 
 def get_taobao_product(item_id):
-    url = "https://toabao-open-api.p.rapidapi.com/BatchGetItemFullInfo"
+    """Запрос товара у RapidAPI: пул аккаунтов, счётчик запросов, прокси."""
+    url = "https://taobao-tmall1.p.rapidapi.com/BatchGetItemFullInfo"
     querystring = {"itemId": item_id, "language": "ru"}
-    headers = {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
-    try:
-        import usage_guard
-        left = usage_guard.consume()
-        daily_limit = usage_guard.LIMIT
-    except Exception:
-        left, daily_limit = 1, 20
-    if left < 0:
-        raise RuntimeError(
-            "Дневной лимит разборов (%d в день) исчерпан — защита от перерасхода RapidAPI. Попробуйте завтра." % daily_limit
-        )
-    response = requests.get(url, headers=headers, params=querystring, timeout=40)
-    if response.status_code != 200:
-        raise RuntimeError(
-            "RapidAPI HTTP %s: %s" % (response.status_code, (response.text or "")[:300])
-        )
-    return response.json()
+    tried = []
+    while True:
+        try:
+            acc_id, key = _pool_next_key(exclude=tried)
+        except RuntimeError as exc:
+            print(f"❌ {exc}")
+            return None
+        headers = {"x-rapidapi-key": key, "x-rapidapi-host": RAPIDAPI_HOST}
+        try:
+            response = requests.get(url, headers=headers, params=querystring, timeout=30,
+                                    proxies=_pool_proxy())
+        except Exception as exc:
+            print(f"❌ RapidAPI ({acc_id}): {exc}")
+            return None
+        status = response.status_code
+        counted = status not in (0, 401, 403, 407, 451)
+        _pool_record(acc_id, status, getattr(response, "headers", None),
+                     exhausted=(status == 429), count=counted)
+        if status == 200:
+            left = _pool_left(acc_id)
+            tail = f", остаток {left}" if left is not None else ""
+            print(f"🔑 Аккаунт RapidAPI: {acc_id} ({status}{tail})")
+            return response.json()
+        print(f"⚠️ Аккаунт {acc_id}: HTTP {status}")
+        body = (getattr(response, "text", "") or "")[:300]
+        if status == 451:
+            print("🌍 RapidAPI блокирует доступ по геолокации (451): нужен выход вне РФ.")
+            return None
+        if status == 403 and "not subscribed" in body.lower():
+            print("🚫 Нет подписки на API для этого аккаунта (403). Квота не тратится.")
+            return None
+        if status in (401, 429) or (status == 403 and not tried):
+            tried.append(acc_id)
+            if len(tried) < 6:
+                print("↪️ Переключаюсь на следующий аккаунт")
+                continue
+        return None
+
 
 def sanitize_filename(name):
     forbidden = '<>:"/\\|?*'
