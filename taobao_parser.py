@@ -57,8 +57,9 @@ def _pool_proxy():
         return None
 
 
-if not RAPIDAPI_KEY or not DEEPSEEK_API_KEY:
-    raise ValueError("❌ Отсутствуют API-ключи.")
+if not DEEPSEEK_API_KEY:
+    raise ValueError("❌ Не задан DEEPSEEK_API_KEY.")
+# RAPIDAPI_KEY не обязателен: ключи берутся из пула api_pool (а env-ключ — только fallback)
 
 IMAGE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -129,11 +130,18 @@ def get_taobao_product(item_id):
             print(f"❌ {exc}")
             return None
         headers = {"x-rapidapi-key": key, "x-rapidapi-host": RAPIDAPI_HOST}
-        try:
-            response = requests.get(url, headers=headers, params=querystring, timeout=30,
-                                    proxies=_pool_proxy())
-        except Exception as exc:
-            print(f"❌ RapidAPI ({acc_id}): {exc}")
+        response = None
+        last_exc = None
+        for _attempt in range(3):
+            try:
+                response = requests.get(url, headers=headers, params=querystring, timeout=30,
+                                        proxies=_pool_proxy())
+                break
+            except Exception as exc:
+                last_exc = exc
+                time.sleep(1.5)
+        if response is None:
+            print(f"❌ RapidAPI ({acc_id}): {last_exc}")
             return None
         status = response.status_code
         counted = status not in (0, 401, 403, 407, 451)

@@ -16,3 +16,4 @@ _test_live.py
 _diag_*.py
 _patch_*.py
 *.zip
+_pick_node.py
