@@ -1,0 +1,509 @@
+import requests
+import json
+import os
+import re
+import zipfile
+import tempfile
+import time
+from datetime import datetime
+from PIL import Image
+
+# --- 1. Настройки API ---
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
+RAPIDAPI_HOST = "toabao-open-api.p.rapidapi.com"
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+
+if not RAPIDAPI_KEY or not DEEPSEEK_API_KEY:
+    raise ValueError("❌ Отсутствуют API-ключи.")
+
+IMAGE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Referer": "https://item.taobao.com/",
+    "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+}
+
+def extract_url_from_text(text):
+    """Извлечь первую HTTP(S)-ссылку из произвольного текста (шара из приложения Taobao).
+    Пример: '【淘宝】https://m.tb.cn/h.XXX?tk=YYY CZ0001 ...' → https://m.tb.cn/h.XXX?tk=YYY"""
+    if not text:
+        return None
+    match = re.search(r'https?://[^\s]+', text)
+    return match.group(0) if match else None
+
+
+def extract_product_id(url):
+    """Извлечь ID товара из URL.
+    Поддерживает: item.taobao.com/item.htm?id=..., detail.tmall.com/item.htm?id=...,
+    /item/NNN.htm, а также короткие ссылки-редиректы (m.tb.cn, tb.cn, s.click.taobao.com) —
+    раскрывает редирект до финального URL и повторяет поиск ID.
+    """
+    # Прямой поиск ID
+    match = re.search(r'[?&]id=(\d+)', url)
+    if match:
+        return match.group(1)
+    match = re.search(r'/item/(\d+)\.htm', url)
+    if match:
+        return match.group(1)
+
+    # Короткие/редирект-ссылки — раскрываем до финального URL
+    if any(host in url for host in ('m.tb.cn', 'tb.cn', 's.click.taobao.com', 'click.mz.simba.taobao.com')):
+        try:
+            resp = requests.get(url, allow_redirects=True, timeout=15, headers={
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"
+            })
+            # 1) HTTP-редирект (если есть)
+            final_url = resp.url or url
+            match = re.search(r'[?&]id=(\d+)', final_url)
+            if match:
+                return match.group(1)
+            match = re.search(r'/item/(\d+)\.htm', final_url)
+            if match:
+                return match.group(1)
+            # 2) m.tb.cn отдаёт JS-редирект: целевой URL зашит в HTML как  var url = "..."
+            m = re.search(r'var\s+url\s*=\s*["\'](https?://[^"\'\s]+)["\']', resp.text)
+            if m:
+                target = m.group(1)
+                match = re.search(r'[?&]id=(\d+)', target)
+                if match:
+                    return match.group(1)
+                match = re.search(r'/item/(\d+)\.htm', target)
+                if match:
+                    return match.group(1)
+        except Exception:
+            pass
+    return None
+
+def get_taobao_product(item_id):
+    url = "https://toabao-open-api.p.rapidapi.com/BatchGetItemFullInfo"
+    querystring = {"itemId": item_id, "language": "ru"}
+    headers = {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
+    response = requests.get(url, headers=headers, params=querystring)
+    return response.json() if response.status_code == 200 else None
+
+def sanitize_filename(name):
+    forbidden = '<>:"/\\|?*'
+    for char in forbidden:
+        name = name.replace(char, '')
+    return name.strip()[:50]
+
+def is_valid_image_url(url):
+    if not url:
+        return False
+    url_lower = url.lower()
+    exclude = ['icon', 'logo', 'avatar', 'button', 'banner', 'qrcode',
+               'weixin', 'alipay', '_100x100', '_50x50', '1x1', 'blank',
+               'track', 'beacon', 'pixel', 'spacer', 'transparent']
+    for word in exclude:
+        if word in url_lower:
+            return False
+    return True
+
+def extract_images_from_html(html):
+    urls = []
+    matches = re.findall(r'src=["\']([^"\']+\.(jpg|jpeg|png|webp))["\']', html, re.IGNORECASE)
+    for match in matches:
+        url = match[0]
+        if url.startswith('//'):
+            url = 'https:' + url
+        elif not url.startswith('http'):
+            continue
+        if is_valid_image_url(url):
+            urls.append(url)
+    return urls
+
+def process_image(url, filepath):
+    try:
+        if url.startswith('//'):
+            url = 'https:' + url
+        elif url.startswith('http:'):
+            url = url.replace('http:', 'https:')
+
+        # Повтор при разовом сбое сети (телефон/мобильный интернет): 3 попытки с паузой
+        response = None
+        for attempt in range(3):
+            try:
+                response = requests.get(url, timeout=15, stream=True, headers=IMAGE_HEADERS)
+                response.raise_for_status()
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+                time.sleep(2)
+
+        content_type = response.headers.get('Content-Type', '')
+        if not content_type.startswith('image/'):
+            return False
+
+        temp_file = filepath + ".tmp.jpg"
+        with open(temp_file, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        img = Image.open(temp_file)
+        img.verify()
+        img = Image.open(temp_file)
+
+        target_size = 800
+        width, height = img.size
+        scale = target_size / max(width, height)
+        new_width = int(width * scale)
+        new_height = int(height * scale)
+        img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+        canvas = Image.new('RGB', (target_size, target_size), (255, 255, 255))
+        x = (target_size - new_width) // 2
+        y = (target_size - new_height) // 2
+
+        if img_resized.mode == 'RGBA':
+            canvas.paste(img_resized, (x, y), img_resized)
+        else:
+            canvas.paste(img_resized.convert('RGB'), (x, y))
+
+        canvas.save(filepath, "WEBP", quality=70)
+        try:
+            os.remove(temp_file)
+        except Exception:
+            pass
+        return True
+    except:
+        return False
+
+def detect_item_type(product_data, title, original_title):
+    root_path = product_data.get("RootPath", {}).get("Content", [])
+    category_names = [cat.get("Name", "").lower() for cat in root_path if cat.get("Name")]
+    
+    type_keywords = {
+        "стул": ["стул", "кресло", "chair", "табурет", "банкетка", "пуф"],
+        "стол": ["стол", "table", "desk"],
+        "диван": ["диван", "sofa", "кушетка", "тахта"],
+        "кровать": ["кровать", "bed"],
+        "шкаф": ["шкаф", "cabinet", "wardrobe"],
+        "светильник": ["свет", "лампа", "lamp", "люстра", "бра", "торшер"],
+    }
+    
+    for cat_name in category_names:
+        for item_type, keywords in type_keywords.items():
+            if any(kw in cat_name for kw in keywords):
+                return item_type
+    
+    text_to_search = (title + " " + original_title).lower()
+    for item_type, keywords in type_keywords.items():
+        if any(kw in text_to_search for kw in keywords):
+            return item_type
+    
+    return ""
+
+def translate_with_deepseek(text, api_key):
+    """Переводит текст через DeepSeek (max_tokens: 200)"""
+    if not re.search(r'[\u4e00-\u9fff]', text):
+        return text
+    try:
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        prompt = f"""Ты — профессиональный переводчик с китайского на русский в сфере мебели и товаров для дома.
+
+Переведи название артикула ТОЧНО на русский язык:
+'{text}'
+
+ВАЖНО:
+- Переведи КАЖДОЕ слово, ничего не пропускай.
+- НЕ возвращай китайские иероглифы — ТОЛЬКО русский перевод.
+- Если в названии есть модель — сохрани её латиницей.
+- Пиши с маленькой буквы.
+
+Верни ТОЛЬКО перевод, без пояснений."""
+        
+        payload = {"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 200}
+        response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=10)
+        if response.status_code == 200:
+            raw = response.json()["choices"][0]["message"]["content"]
+            return re.sub(r'\s+', ' ', raw).strip()
+    except:
+        pass
+    return text
+
+def run_parser(product_url, progress_callback=None, sku_order=None):
+    def log(msg):
+        print(msg)
+        if progress_callback:
+            progress_callback(msg)
+
+    log("🛒 Парсер товаров Taobao/Tmall")
+    log("-" * 40)
+
+    product_id = extract_product_id(product_url)
+    if not product_id:
+        log("❌ Не удалось извлечь ID товара.")
+        return None
+
+    log(f"📋 ID: {product_id}")
+    log("🚀 Получаю данные...")
+
+    product_data = get_taobao_product(product_id)
+    if not product_data:
+        log("Не удалось получить данные.")
+        return None
+    ec = product_data.get("ErrorCode")
+    if ec and ec != "Ok":
+        log(f"❌ API: {ec} | {product_data.get('SubErrorCode', '')} | {product_data.get('ErrorDescription', 'ошибка API')}")
+        return None
+
+    item = product_data.get("Result", {}).get("Item", {})
+    vendor = product_data.get("Result", {}).get("Vendor", {})
+
+    title = item.get("Title", "Нет названия")
+    original_title = item.get("OriginalTitle", "")
+    all_attributes = item.get("Attributes", [])
+    pictures = item.get("Pictures", [])
+    description = item.get("Description", "")
+    configured_items = item.get("ConfiguredItems", [])
+    videos = item.get("Videos", [])
+
+    # --- Определяем тип товара ---
+    detected_type = detect_item_type(product_data.get("Result", {}), title, original_title)
+    log(f"🔍 Определён тип товара: {detected_type or 'не определён'}")
+
+    # --- Название товара: Title из API (русский, DeepSeek отключён по команде 13.08) ---
+    fixed_title = title
+
+    log(f"📦 Название: {fixed_title[:50]}...")
+
+    # --- Строим словари ---
+    vid_to_name = {}
+    vid_to_cn = {}
+    for attr in all_attributes:
+        vid = attr.get("Vid", "")
+        if vid:
+            original_name = attr.get('Value') or attr.get('OriginalValue') or ''
+            original_name = re.sub(r'[【\[\]】]', '', original_name).strip()
+            if original_name:
+                vid_to_name[vid] = original_name
+            cn_name = attr.get('OriginalValue') or attr.get('Value') or ''
+            cn_name = re.sub(r'[【\[\]】]', '', cn_name).strip()
+            if cn_name:
+                vid_to_cn[vid] = cn_name
+
+    vid_to_image = {}
+    for attr in all_attributes:
+        vid = attr.get("Vid", "")
+        img_url = attr.get('ImageUrl', '')
+        if vid and img_url:
+            vid_to_image[vid] = img_url
+
+    # Словарь Id → акционная цена из Promotions (ВСЕГДА используется, если есть)
+    promotions = item.get("Promotions", [])
+    promo_prices = {}
+    use_promo = False
+    if promotions:
+        promo_config = promotions[0].get("ConfiguredItems", [])
+        if promo_config:
+            for pci in promo_config:
+                price = pci.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price")
+                if price:
+                    promo_prices[pci.get("Id", "")] = price
+            use_promo = True
+            log(f"💰 Будут использованы акционные цены (со скидкой)")
+
+    # --- Настоящие артикулы из ConfiguredItems ---
+    real_skus = []
+    for cfg_item in configured_items:
+        configurators = cfg_item.get("Configurators", [])
+        sku_id = cfg_item.get("Id", "")
+        
+        if use_promo and sku_id in promo_prices:
+            price_cny = promo_prices[sku_id]
+        else:
+            price_cny = cfg_item.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price", 0)
+        
+        parts = []
+        parts_cn = []
+        image_url = ""
+        for cfg in configurators:
+            vid = cfg.get("Vid", "")
+            if vid in vid_to_name:
+                parts.append(vid_to_name[vid])
+            if vid in vid_to_cn:
+                parts_cn.append(vid_to_cn[vid])
+            if not image_url and vid in vid_to_image:
+                image_url = vid_to_image[vid]
+        
+        # Название SKU: русский Value из API (DeepSeek отключён по команде 13.08)
+        sku_name = ', '.join(parts) if parts else f'Артикул {len(real_skus)+1}'
+        
+        real_skus.append({
+            'id': sku_id,
+            'name': sku_name,
+            'price': price_cny,
+            'image_url': image_url,
+            'name_cn': ' '.join(parts_cn)
+        })
+
+    # --- FALLBACK: Если нет артикулов — берём из Attributes ---
+    if not real_skus:
+        log("⚠️ ConfiguredItems не дали результатов, использую Attributes")
+        for attr in all_attributes:
+            if attr.get("IsConfigurator"):
+                vid = attr.get("Vid", "")
+                original_name = attr.get('Value') or attr.get('OriginalValue') or ''
+                original_name = re.sub(r'[【\[\]】]', '', original_name).strip()
+                if not original_name:
+                    continue
+                price = vid_to_price.get(vid, 0) if vid_to_price else 0
+                image_url = attr.get('ImageUrl', '')
+                real_skus.append({
+                    'id': vid,
+                    'name': original_name,
+                    'price': price,
+                    'image_url': image_url,
+                    'name_cn': original_name
+                })
+
+    # --- Авто-порядок по странице: главный атрибут «颜色分类» (Классификация цветов)
+    # содержит список вариантов в том порядке, как они идут на странице Taobao.
+    # Поле «Порядок артикулов» в web_app становится необязательным.
+    def _apply_page_order(skus, attributes):
+        master = None
+        for attr in attributes:
+            if attr.get("IsConfigurator"):
+                continue
+            pid = str(attr.get("Pid", ""))
+            prop = str(attr.get("PropertyName", ""))
+            if pid in ("颜色分类", "Классификация цветов") or prop in ("颜色分类", "Классификация цветов"):
+                val = attr.get("OriginalValue") or attr.get("Value") or ""
+                if len(val.split()) >= 2:
+                    master = val
+                    break
+        if not master:
+            return skus
+        master_norm = re.sub(r'[\s（）()【\[\]】]', '', master)
+        for sku in skus:
+            key = re.sub(r'[\s（）()【\[\]】]', '', sku.get('name_cn', ''))
+            pos = master_norm.find(key) if key else -1
+            sku['_page_pos'] = pos if pos >= 0 else 10 ** 9
+        skus.sort(key=lambda s: s['_page_pos'])
+        for sku in skus:
+            sku.pop('_page_pos', None)
+        log("📋 Порядок артикулов по странице (颜色分类) применён")
+        return skus
+
+    real_skus = _apply_page_order(real_skus, all_attributes)
+
+    # Сортировка по порядку магазина (если передан sku_order — список названий из выпадающего списка Taobao)
+    if sku_order:
+        def _norm(s):
+            s = re.sub(r'\s+', '', s or '')
+            return s.replace('（', '').replace('）', '').replace('(', '').replace(')', '')
+        _idx = {}
+        for sku in real_skus:
+            key = _norm(sku.get('name_cn', ''))
+            if key and key not in _idx:
+                _idx[key] = sku
+        _ordered = []
+        _seen = set()
+        for line in sku_order:
+            line = line.strip()
+            if not line:
+                continue
+            key = _norm(line)
+            if key in _idx and key not in _seen:
+                _ordered.append(_idx[key])
+                _seen.add(key)
+        for sku in real_skus:
+            if _norm(sku.get('name_cn', '')) not in _seen:
+                _ordered.append(sku)
+        real_skus = _ordered
+        log(f"📋 Порядок из магазина применён: {len(_ordered)} артикулов")
+
+    log(f"🏷️ Артикулов: {len(real_skus)}")
+
+    desc_images = extract_images_from_html(description)
+    log(f"📄 Картинок в описании: {len(desc_images)}")
+
+    temp_dir = tempfile.mkdtemp()
+    log(f"\n📁 Временная папка: {temp_dir}")
+
+    vendor_name = vendor.get("DisplayName") or vendor.get("ShopName") or "—"
+    
+    txt = f"=== ТОВАР ===\nНазвание: {fixed_title}\nБренд: {item.get('BrandName', '—')}\n"
+    txt += f"Продавец: {vendor_name}\nСсылка: {item.get('TaobaoItemUrl', product_url)}\n"
+
+    if videos:
+        video_url = videos[0].get("Url", "")
+        if video_url:
+            txt += f"Видео: {video_url}\n"
+
+    txt += f"\n=== АРТИКУЛЫ ({len(real_skus)} шт.) ===\n"
+
+    processed = 0
+    for i, sku in enumerate(real_skus, 1):
+        sku_name = sku['name']
+        price = sku['price']
+        img_url = sku['image_url']
+        
+        txt += f"{str(i).zfill(2)}. {sku_name} — {price} ¥\n"
+        
+        if img_url and is_valid_image_url(img_url):
+            filename = f"{str(i).zfill(2)}_{sanitize_filename(sku_name)}.webp"
+            filepath = os.path.join(temp_dir, filename)
+            if process_image(img_url, filepath):
+                processed += 1
+                log(f"  ✅ {filename}")
+
+    txt += f"\n=== ГАЛЕРЕЯ ({len(pictures)} шт.) ===\n"
+    for i, pic in enumerate(pictures, 1):
+        txt += f"{str(i).zfill(2)}. Изображение {i}{' (главное)' if pic.get('IsMain') else ''}\n"
+        img_url = pic.get('Large', {}).get('Url') or pic.get('Medium', {}).get('Url') or pic.get('Url')
+        if img_url and is_valid_image_url(img_url):
+            filename = f"gallery_{str(i).zfill(2)}.webp"
+            if process_image(img_url, os.path.join(temp_dir, filename)):
+                processed += 1
+                log(f"  ✅ {filename}")
+
+    if desc_images:
+        txt += f"\n=== КАРТИНКИ ИЗ ОПИСАНИЯ ({len(desc_images)} шт.) ===\n"
+        for i, img_url in enumerate(desc_images, 1):
+            txt += f"{str(i).zfill(2)}. Из описания {i}\n"
+            filename = f"desc_{str(i).zfill(2)}.webp"
+            if process_image(img_url, os.path.join(temp_dir, filename)):
+                processed += 1
+                log(f"  ✅ {filename}")
+
+    txt_path = os.path.join(temp_dir, "описание.txt")
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write(txt)
+
+    json_path = os.path.join(temp_dir, "api_response.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(product_data, f, indent=2, ensure_ascii=False)
+    log(f"  ✅ api_response.json сохранён")
+
+    zip_name = f"taobao_{product_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    zip_path = os.path.join(temp_dir, zip_name)
+    
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, dirs, files in os.walk(temp_dir):
+            for file in files:
+                if file != zip_name:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, temp_dir)
+                    zipf.write(file_path, arcname)
+
+    log("-" * 40)
+    log(f"✅ Готово! Файлов: {processed}")
+    log(f"📦 Архив: {zip_name}")
+
+    # Возвращаем структурированные данные для shop_uploader
+    gallery = [pic.get('Large', {}).get('Url') or pic.get('Medium', {}).get('Url') or pic.get('Url') for pic in pictures if pic.get('Url')]
+    gallery = [u for u in gallery if u]
+    
+    result = {
+        'zip_path': zip_path,
+        'title': fixed_title,
+        # Обычная (не мобильная) ссылка на товар: из API, fallback — по id.
+        'taobao_url': item.get('TaobaoItemUrl') or f'https://item.taobao.com/item.htm?id={product_id}',
+        'product_id': product_id,
+        'skus': real_skus,
+        'gallery_urls': gallery,
+        'desc_images': desc_images,
+        'videos': videos,
+    }
+    return result
