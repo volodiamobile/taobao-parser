@@ -58,7 +58,10 @@ def _pool_proxy():
 
 
 if not DEEPSEEK_API_KEY:
-    raise ValueError("❌ Не задан DEEPSEEK_API_KEY.")
+    # Ключ DeepSeek не обязателен: перевод отключён (команда 13.08), translate_with_deepseek не вызывается.
+    # Раньше отсутствие ключа валило всё приложение при импорте (инцидент 31.10.2026: Secrets заменили
+    # блоком пула — приложение упало в ValueError на старте).
+    print("⚠️ DEEPSEEK_API_KEY не задан — перевод текста недоступен, работа продолжается.")
 # RAPIDAPI_KEY не обязателен: ключи берутся из пула api_pool (а env-ключ — только fallback)
 
 IMAGE_HEADERS = {
