@@ -140,13 +140,38 @@ def _accounts_from_secrets():
     return out, provider
 
 
+def _accounts_from_env():
+    """Пул из переменной окружения RAPIDAPI_KEYS="key1,key2" (Streamlit Cloud отдаёт secrets в env)."""
+    raw = (os.environ.get("RAPIDAPI_KEYS") or "").strip()
+    if not raw:
+        return []
+    keys = [k.strip() for k in raw.replace(";", ",").split(",") if k.strip()]
+    out = []
+    for i, key in enumerate(keys, 1):
+        out.append({
+            "id": f"acc{i}",
+            "label": f"rapidapi-{i}",
+            "key": key,
+            "limit": DEFAULT_LIMIT,
+            "period": DEFAULT_PERIOD if DEFAULT_PERIOD != "month" else "day",
+            "enabled": True,
+            "added_at": "env",
+            "source": "env",
+        })
+    return out
+
+
 def load_accounts():
     data = _read_json(ACCOUNTS_PATH, None, allow_alt=False)
     if data is None:
-        # В облаке rapidapi_accounts.json нет (он в .gitignore) — берём пул из Streamlit secrets
+        # В облаке rapidapi_accounts.json нет (он в .gitignore):
+        # 1) пул из Streamlit secrets ([rapidapi_accounts.<id>]), 2) одна строка RAPIDAPI_KEYS в env
         sec_accounts, sec_provider = _accounts_from_secrets()
         if sec_accounts:
             return {"provider": sec_provider, "accounts": sec_accounts}
+        env_accounts = _accounts_from_env()
+        if env_accounts:
+            return {"provider": {}, "accounts": env_accounts}
         return {"provider": {}, "accounts": []}
     if isinstance(data, list):          # старый/упрощённый формат
         data = {"provider": {}, "accounts": data}
