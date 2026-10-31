@@ -171,6 +171,18 @@ def get_taobao_product(item_id):
         return None
 
 
+def _lc_first(text):
+    """Первая БУКВА названия артикула — строчная (правило владельца 31.10.2026).
+    Ведущие скобки/пробелы пропускаем: «(Натуральный травертин)» → «(натуральный травертин)».
+    Остальной текст не трогаем: размеры, латиница и сокращения сохраняются как есть."""
+    if not text:
+        return text
+    for i, ch in enumerate(text):
+        if ch.isalpha():
+            return text[:i] + ch.lower() + text[i + 1:]
+    return text
+
+
 def sanitize_filename(name):
     forbidden = '<>:"/\\|?*'
     for char in forbidden:
@@ -451,6 +463,7 @@ def run_parser(product_url, progress_callback=None, sku_order=None):
         
         # Название SKU: русский Value из API (DeepSeek отключён по команде 13.08)
         sku_name = ', '.join(parts) if parts else f'Артикул {len(real_skus)+1}'
+        sku_name = _lc_first(sku_name)
         
         real_skus.append({
             'id': sku_id,
@@ -474,7 +487,7 @@ def run_parser(product_url, progress_callback=None, sku_order=None):
                 image_url = attr.get('ImageUrl', '')
                 real_skus.append({
                     'id': vid,
-                    'name': original_name,
+                    'name': _lc_first(original_name),
                     'price': price,
                     'image_url': image_url,
                     'name_cn': original_name
