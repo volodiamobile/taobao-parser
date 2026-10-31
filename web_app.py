@@ -152,7 +152,7 @@ def _do_upload(res, shop_token):
 
 
 _c1, _c2 = st.columns(2)
-_parse_click = _c1.button("🚀 Обработать товар", disabled=not url)
+_parse_click = _c1.button("🚀 Обработать товар (только ZIP)", disabled=not url)
 _draft_click = _c2.button("🛒 Создать черновик + ZIP", type="primary", disabled=not url)
 
 if _parse_click or _draft_click:
