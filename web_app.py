@@ -131,6 +131,8 @@ def _show_zip(res):
                 mime="application/zip",
                 key="zip_" + os.path.basename(res['zip_path']),
             )
+        st.caption("Повторное нажатие по этому же товару не тратит запрос к RapidAPI: "
+                   "берётся уже готовый результат, и архив можно скачать снова.")
 
 
 def _do_upload(res, shop_token):
@@ -151,9 +153,8 @@ def _do_upload(res, shop_token):
             st.error(traceback.format_exc())
 
 
-_parse_click = st.button("🚀 Обработать товар (только ZIP)", disabled=not url, use_container_width=True)
-_draft_click = st.button("🛒 Создать черновик + ZIP", type="primary", disabled=not url,
-                         use_container_width=True)
+_parse_click = st.button("🚀 Обработать товар (только ZIP)", disabled=not url)
+_draft_click = st.button("🛒 Создать черновик + ZIP", type="primary", disabled=not url)
 
 if _parse_click or _draft_click:
     # Поддержка мобильных шары: извлекаем URL из текста, если вставлен текст
