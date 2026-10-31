@@ -50,6 +50,8 @@ USAGE_DIR = os.path.join(BASE, "_usage")
 USAGE_PATH = os.path.join(USAGE_DIR, "rapidapi_usage.json")
 
 DEFAULT_LIMIT = 20          # запросов на аккаунт за период (бесплатный тариф RapidAPI)
+DEFAULT_ADVANCED_LIMIT = 10  # advanced-запросов в сутки (подтверждено заголовками 31.10.2026);
+#                              используется, пока ключ ещё не делал вызовов и лимит неизвестен
 DEFAULT_PERIOD = "month"    # "month" | "day" | "total"
 DEFAULT_RESERVE = 1         # оставляем 1 запрос в запасе, чтобы не упереться в 429
 
@@ -246,6 +248,10 @@ def remaining_of(acc, st):
                 rest = min(rest, int(val))
             except (TypeError, ValueError):
                 pass
+    # advanced-лимит ещё не известен (ключ не делал вызовов в этом периоде):
+    # ёмкость всё равно не больше 10, иначе подпись/выбор ключа завышают остаток
+    if st.get("advanced_remaining") is None:
+        rest = min(rest, int(st.get("advanced_limit_from_api") or DEFAULT_ADVANCED_LIMIT))
     return max(0, rest)
 
 
@@ -371,11 +377,10 @@ def capacity_for(acc_id):
     st = _state_for(usage, acc)
     cap = _limit_of(acc, st)
     adv = st.get("advanced_limit_from_api")
-    if adv is not None:
-        try:
-            cap = min(cap, int(adv))
-        except (TypeError, ValueError):
-            pass
+    try:
+        cap = min(cap, int(adv) if adv is not None else DEFAULT_ADVANCED_LIMIT)
+    except (TypeError, ValueError):
+        cap = min(cap, DEFAULT_ADVANCED_LIMIT)
     return cap
 
 
