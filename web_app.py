@@ -151,9 +151,10 @@ def _do_upload(res, shop_token):
             st.error(traceback.format_exc())
 
 
-_c1, _c2 = st.columns(2)
-_parse_click = _c1.button("🚀 Обработать товар (только ZIP)", disabled=not url)
-_draft_click = _c2.button("🛒 Создать черновик + ZIP", type="primary", disabled=not url)
+_c1, _c2 = st.columns(2, gap="small")
+_parse_click = _c1.button("🚀 Обработать товар (только ZIP)", disabled=not url, use_container_width=True)
+_draft_click = _c2.button("🛒 Создать черновик + ZIP", type="primary", disabled=not url,
+                          use_container_width=True)
 
 if _parse_click or _draft_click:
     # Поддержка мобильных шары: извлекаем URL из текста, если вставлен текст
