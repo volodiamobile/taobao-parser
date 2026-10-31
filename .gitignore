@@ -17,3 +17,5 @@ _diag_*.py
 _patch_*.py
 *.zip
 _pick_node.py
+
+_diag_run_out*.txt
