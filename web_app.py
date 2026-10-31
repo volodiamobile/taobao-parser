@@ -77,66 +77,105 @@ if st.sidebar.button("🚪 Выйти"):
 
 url = st.text_input("Ссылка на товар Taobao/Tmall:", placeholder="https://item.taobao.com/item.htm?id=... или https://detail.tmall.com/item.htm?id=...")
 
-# === Обработка товара ===
-if st.button("🚀 Обработать товар", type="primary", disabled=not url):
+# === Обработка товара и создание черновика — один запрос к RapidAPI ===
+from taobao_parser import extract_product_id
+
+
+def _valid_url(u):
+    return any(host in u for host in ("taobao.com", "tmall.com", "m.tb.cn", "tb.cn",
+                                      "s.click.taobao.com", "world.taobao.com"))
+
+
+def _shop_token():
+    tok = (os.environ.get("SHOP_API_TOKEN") or "").strip()
+    if tok:
+        return tok
+    try:
+        return (st.secrets.get("SHOP_API_TOKEN") or "").strip()
+    except Exception:
+        return ""
+
+
+def _do_parse(processed_url):
+    log_container = st.empty()
+    logs = []
+
+    def log_callback(msg):
+        logs.append(msg)
+        log_container.text("\n".join(logs[-20:]))
+
+    with st.spinner("Идет обработка, подождите..."):
+        try:
+            res = run_parser(processed_url, progress_callback=log_callback)
+        except Exception as exc:
+            st.error(f"❌ Сбой при обработке: {exc}")
+            import traceback
+            st.code(traceback.format_exc(), language="text")
+            return None
+    if res and res.get('zip_path') and os.path.exists(res['zip_path']):
+        st.session_state.parsed_result = res
+        return res
+    st.error("❌ Ошибка при обработке товара")
+    if logs:
+        st.code("\n".join(logs[-15:]), language="text")
+    return None
+
+
+def _show_zip(res):
+    if res and res.get('zip_path') and os.path.exists(res['zip_path']):
+        with open(res['zip_path'], 'rb') as f:
+            st.download_button(
+                label="📥 Скачать ZIP-архив",
+                data=f,
+                file_name=os.path.basename(res['zip_path']),
+                mime="application/zip",
+                key="zip_" + os.path.basename(res['zip_path']),
+            )
+
+
+def _do_upload(res, shop_token):
+    with st.spinner("Загрузка в магазин..."):
+        try:
+            uploader = ShopScriptUploader(shop_token)
+            all_images = list(dict.fromkeys(
+                (res.get('gallery_urls') or []) + (res.get('desc_images') or [])
+            ))
+            product_id, logs = uploader.run(
+                res['title'], res['taobao_url'], all_images, res['skus']
+            )
+            st.success(f"✅ Товар #{product_id} создан (черновик)!")
+            st.text('\n'.join(logs[-10:]))
+        except Exception as e:
+            st.error(f"❌ Ошибка загрузки: {e}")
+            import traceback
+            st.error(traceback.format_exc())
+
+
+_c1, _c2 = st.columns(2)
+_parse_click = _c1.button("🚀 Обработать товар", disabled=not url)
+_draft_click = _c2.button("🛒 Создать черновик + ZIP", type="primary", disabled=not url)
+
+if _parse_click or _draft_click:
     # Поддержка мобильных шары: извлекаем URL из текста, если вставлен текст
     processed_url = extract_url_from_text(url) or url
-    if not any(host in processed_url for host in ("taobao.com", "tmall.com", "m.tb.cn", "tb.cn", "s.click.taobao.com", "world.taobao.com")):
+    if not _valid_url(processed_url):
         st.error("❌ Ссылка должна быть на сайт Taobao или Tmall.")
     else:
-        log_container = st.empty()
-        logs = []
-        
-        def log_callback(msg):
-            logs.append(msg)
-            log_container.text("\n".join(logs[-20:]))
-        
-        with st.spinner("Идет обработка, подождите..."):
-            result = None
-            try:
-                result = run_parser(processed_url, progress_callback=log_callback)
-            except Exception as exc:
-                st.error(f"❌ Сбой при обработке: {exc}")
-                import traceback
-                st.code(traceback.format_exc(), language="text")
+        result = None
+        cached = st.session_state.get('parsed_result')
+        # этот же товар уже разобран — второй запрос к RapidAPI не тратим
+        if cached and cached.get('product_id') == extract_product_id(processed_url):
+            result = cached
+            st.info("ℹ️ Товар уже разобран — использую результат без нового запроса к RapidAPI.")
+        else:
+            result = _do_parse(processed_url)
 
-            if result and result.get('zip_path') and os.path.exists(result['zip_path']):
-                st.success("✅ Обработка завершена!")
-                with open(result['zip_path'], "rb") as f:
-                    st.download_button(
-                        label="📥 Скачать ZIP-архив",
-                        data=f,
-                        file_name=os.path.basename(result['zip_path']),
-                        mime="application/zip"
-                    )
-                st.session_state.parsed_result = result
-            else:
-                st.error("❌ Ошибка при обработке товара")
-                if logs:
-                    st.code("\n".join(logs[-15:]), language="text")
-
-# === Загрузка в магазин (ВНЕ блока обработки!) ===
-if st.session_state.get('parsed_result'):
-    shop_token = os.environ.get("SHOP_API_TOKEN", st.secrets.get("SHOP_API_TOKEN", ""))
-    if shop_token:
-        if st.button("🛒 Загрузить в E-Mall (черновик)", type="primary"):
-            with st.spinner("Загрузка в магазин..."):
-                try:
-                    data = st.session_state.parsed_result
-                    uploader = ShopScriptUploader(shop_token)
-                    # ВСЕ картинки: главные + из описания, без дублей (порядок сохраняется)
-                    all_images = list(dict.fromkeys(
-                        (data.get('gallery_urls') or []) + (data.get('desc_images') or [])
-                    ))
-                    product_id, logs = uploader.run(
-                        data['title'], data['taobao_url'],
-                        all_images, data['skus']
-                    )
-                    st.success(f"✅ Товар #{product_id} создан (черновик)!")
-                    st.text('\n'.join(logs[-10:]))
-                except Exception as e:
-                    st.error(f"❌ Ошибка: {e}")
-                    import traceback
-                    st.error(traceback.format_exc())
-    else:
-        st.warning("⚠️ SHOP_API_TOKEN не найден. Загрузка в магазин недоступна.")
+        if result:
+            # ZIP собран тем же единственным запросом — сразу даём скачать
+            _show_zip(result)
+            if _draft_click:
+                token = _shop_token()
+                if token:
+                    _do_upload(result, token)
+                else:
+                    st.warning("⚠️ SHOP_API_TOKEN не найден. ZIP готов, выгрузка в магазин недоступна.")
