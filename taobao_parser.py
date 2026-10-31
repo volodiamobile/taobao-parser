@@ -182,6 +182,29 @@ def _clean_sku_name(text):
     return _lc_first(text)
 
 
+def _price_cny(obj, default=0):
+    """Цена товара в юанях.
+
+    RapidAPI конвертирует цену в валюту по геолокации запроса (через прокси США приходит USD:
+    вариант 1450 CNY → 184.86 USD), а мы выводим цену как ¥. Поэтому сначала берём
+    OriginalPrice при OriginalCurrencyCode = CNY, а ConvertedPriceList — только как запасной вариант.
+    """
+    if not isinstance(obj, dict):
+        return default
+    code = str(obj.get("OriginalCurrencyCode") or "").upper()
+    orig = obj.get("OriginalPrice")
+    if code == "CNY" and orig not in (None, ""):
+        try:
+            return float(orig)
+        except (TypeError, ValueError):
+            pass
+    try:
+        val = obj.get("ConvertedPriceList", {}).get("Internal", {}).get("Price")
+        return float(val) if val not in (None, "") else default
+    except (TypeError, ValueError, AttributeError):
+        return default
+
+
 def _lc_first(text):
     """Первая БУКВА названия артикула — строчная (правило владельца 31.10.2026).
     Ведущие скобки/пробелы пропускаем: «(Натуральный травертин)» → «(натуральный травертин)».
@@ -468,9 +491,7 @@ def run_parser(product_url, progress_callback=None, sku_order=None):
         vid = attr.get("Vid", "")
         if not vid:
             continue
-        price = attr.get("Price")
-        if isinstance(price, dict):
-            price = (price.get("ConvertedPriceList", {}).get("Internal", {}) or {}).get("Price")
+        price = _price_cny(attr.get("Price"), None) if isinstance(attr.get("Price"), dict) else None
         if price:
             vid_to_price[vid] = price
 
@@ -482,7 +503,7 @@ def run_parser(product_url, progress_callback=None, sku_order=None):
         promo_config = promotions[0].get("ConfiguredItems", [])
         if promo_config:
             for pci in promo_config:
-                price = pci.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price")
+                price = _price_cny(pci.get("Price"), None)
                 if price:
                     promo_prices[pci.get("Id", "")] = price
             use_promo = True
@@ -497,7 +518,7 @@ def run_parser(product_url, progress_callback=None, sku_order=None):
         if use_promo and sku_id in promo_prices:
             price_cny = promo_prices[sku_id]
         else:
-            price_cny = cfg_item.get("Price", {}).get("ConvertedPriceList", {}).get("Internal", {}).get("Price", 0)
+            price_cny = _price_cny(cfg_item.get("Price"), 0)
         
         parts = []
         parts_cn = []
