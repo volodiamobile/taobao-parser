@@ -36,10 +36,12 @@ try:
     _accs = [a for a in api_pool.load_accounts()["accounts"] if a.get("enabled", True)]
     if _accs:
         _left = sum(api_pool.remaining_for(a["id"]) or 0 for a in _accs)
-        _lim = sum(int(a.get("limit") or 20) for a in _accs)
-        st.sidebar.caption("Запросов сегодня: осталось %d из %d (%d акк.)" % (_left, _lim, len(_accs)))
+        _lim = sum(api_pool.capacity_for(a["id"]) or int(a.get("limit") or 20) for a in _accs)
+        _src = " из secrets" if any(a.get("source") == "secrets" for a in _accs) else ""
+        st.sidebar.caption("Запросов сегодня: осталось %d из %d (%d акк.%s)" % (
+            _left, _lim, len(_accs), _src))
     else:
-        st.sidebar.caption("Пул аккаунтов не настроен — работа на одном ключе")
+        st.sidebar.caption("Пул аккаунтов не настроен — работа на одном ключе из secrets")
 except Exception:
     pass
 
@@ -65,8 +67,14 @@ if st.button("🚀 Обработать товар", type="primary", disabled=no
             log_container.text("\n".join(logs[-20:]))
         
         with st.spinner("Идет обработка, подождите..."):
-            result = run_parser(processed_url, progress_callback=log_callback)
-            
+            result = None
+            try:
+                result = run_parser(processed_url, progress_callback=log_callback)
+            except Exception as exc:
+                st.error(f"❌ Сбой при обработке: {exc}")
+                import traceback
+                st.code(traceback.format_exc(), language="text")
+
             if result and result.get('zip_path') and os.path.exists(result['zip_path']):
                 st.success("✅ Обработка завершена!")
                 with open(result['zip_path'], "rb") as f:
@@ -79,6 +87,8 @@ if st.button("🚀 Обработать товар", type="primary", disabled=no
                 st.session_state.parsed_result = result
             else:
                 st.error("❌ Ошибка при обработке товара")
+                if logs:
+                    st.code("\n".join(logs[-15:]), language="text")
 
 # === Загрузка в магазин (ВНЕ блока обработки!) ===
 if st.session_state.get('parsed_result'):

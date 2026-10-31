@@ -310,10 +310,25 @@ def translate_with_deepseek(text, api_key):
     return text
 
 def run_parser(product_url, progress_callback=None, sku_order=None):
+    # Файл лога: если прогон оборвётся, останется след (в облаке — во временной папке)
+    log_path = None
+    try:
+        log_dir = os.path.join(tempfile.gettempdir(), "taobao-parser-logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "parser_%s.log" % datetime.now().strftime("%Y%m%d"))
+    except Exception:
+        log_path = None
+
     def log(msg):
         print(msg)
         if progress_callback:
             progress_callback(msg)
+        if log_path:
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write("%s %s\n" % (datetime.now().strftime("%H:%M:%S"), msg))
+            except Exception:
+                pass
 
     log("🛒 Парсер товаров Taobao/Tmall")
     log("-" * 40)
@@ -380,6 +395,19 @@ def run_parser(product_url, progress_callback=None, sku_order=None):
         img_url = attr.get('ImageUrl', '')
         if vid and img_url:
             vid_to_image[vid] = img_url
+
+    # Цены по Vid (для fallback-ветки: когда ConfiguredItems пуст).
+    # Раньше словарь вообще не существовал — ветка падала с NameError.
+    vid_to_price = {}
+    for attr in all_attributes:
+        vid = attr.get("Vid", "")
+        if not vid:
+            continue
+        price = attr.get("Price")
+        if isinstance(price, dict):
+            price = (price.get("ConvertedPriceList", {}).get("Internal", {}) or {}).get("Price")
+        if price:
+            vid_to_price[vid] = price
 
     # Словарь Id → акционная цена из Promotions (ВСЕГДА используется, если есть)
     promotions = item.get("Promotions", [])
@@ -526,6 +554,7 @@ def run_parser(product_url, progress_callback=None, sku_order=None):
     txt += f"\n=== АРТИКУЛЫ ({len(real_skus)} шт.) ===\n"
 
     processed = 0
+    failed = 0
     for i, sku in enumerate(real_skus, 1):
         sku_name = sku['name']
         price = sku['price']
@@ -539,6 +568,8 @@ def run_parser(product_url, progress_callback=None, sku_order=None):
             if process_image(img_url, filepath):
                 processed += 1
                 log(f"  ✅ {filename}")
+            else:
+                failed += 1
 
     txt += f"\n=== ГАЛЕРЕЯ ({len(pictures)} шт.) ===\n"
     for i, pic in enumerate(pictures, 1):
@@ -581,6 +612,8 @@ def run_parser(product_url, progress_callback=None, sku_order=None):
 
     log("-" * 40)
     log(f"✅ Готово! Файлов: {processed}")
+    if failed:
+        log(f"⚠️ Не удалось скачать картинок: {failed}")
     log(f"📦 Архив: {zip_name}")
 
     # Возвращаем структурированные данные для shop_uploader

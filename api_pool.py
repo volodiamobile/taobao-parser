@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 
@@ -59,26 +60,94 @@ class ApiPoolError(RuntimeError):
 
 # ---------------------------------------------------------------- storage ---
 
-def _read_json(path, default):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return default
-    except Exception:
-        return default
+def _alt_path(path):
+    """Резервное место для счётчиков: на Streamlit Cloud папка репозитория только для чтения."""
+    return os.path.join(tempfile.gettempdir(), "taobao-parser-state", os.path.basename(path))
+
+
+def _read_json(path, default, allow_alt=True):
+    paths = [path, _alt_path(path)] if allow_alt else [path]
+    for p in paths:
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            continue
+        except Exception:
+            return default
+    return default
 
 
 def _write_json(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    for p in (path, _alt_path(path)):
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            tmp = p + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(payload)
+            os.replace(tmp, p)
+            return
+        except OSError:
+            continue        # папка репозитория может быть только для чтения (Streamlit Cloud)
+
+
+def _accounts_from_secrets():
+    """Пул аккаунтов из Streamlit secrets (облако, где JSON-файла нет).
+
+    Формат в secrets.toml:
+        [rapidapi_accounts.acc1]
+        key = "..."
+        limit = 20
+        period = "day"
+    """
+    try:
+        import streamlit as st
+        sec = st.secrets
+    except Exception:
+        return [], {}
+    block = None
+    provider = {}
+    try:
+        if "rapidapi_accounts" in sec:
+            block = sec["rapidapi_accounts"]
+        if "rapidapi_proxy" in sec:
+            provider = {"proxy": str(sec["rapidapi_proxy"]).strip()}
+    except Exception:
+        return [], {}
+    if not block:
+        return [], provider
+    out = []
+    items = block.items() if hasattr(block, "items") else enumerate(block)
+    for key_id, val in items:
+        try:
+            d = dict(val)
+        except Exception:
+            continue
+        acc_key = str(d.get("key") or "").strip()
+        if not acc_key:
+            continue
+        out.append({
+            "id": str(d.get("id") or key_id),
+            "label": str(d.get("label") or d.get("id") or key_id),
+            "key": acc_key,
+            "limit": int(d.get("limit") or DEFAULT_LIMIT),
+            "period": str(d.get("period") or DEFAULT_PERIOD),
+            "enabled": bool(d.get("enabled", True)),
+            "added_at": str(d.get("added_at") or "secrets"),
+            "source": "secrets",
+        })
+    return out, provider
 
 
 def load_accounts():
-    data = _read_json(ACCOUNTS_PATH, {"provider": {}, "accounts": []})
+    data = _read_json(ACCOUNTS_PATH, None, allow_alt=False)
+    if data is None:
+        # В облаке rapidapi_accounts.json нет (он в .gitignore) — берём пул из Streamlit secrets
+        sec_accounts, sec_provider = _accounts_from_secrets()
+        if sec_accounts:
+            return {"provider": sec_provider, "accounts": sec_accounts}
+        return {"provider": {}, "accounts": []}
     if isinstance(data, list):          # старый/упрощённый формат
         data = {"provider": {}, "accounts": data}
     data.setdefault("provider", {})
@@ -265,6 +334,24 @@ def remaining_for(acc_id):
     if not acc:
         return None
     return remaining_of(acc, _state_for(usage, acc))
+
+
+def capacity_for(acc_id):
+    """Реальная ёмкость ключа за период: min(requests-лимит, advanced-лимит)."""
+    accounts = load_accounts()
+    usage = load_usage()
+    acc = next((a for a in accounts["accounts"] if a.get("id") == acc_id), None)
+    if not acc:
+        return None
+    st = _state_for(usage, acc)
+    cap = _limit_of(acc, st)
+    adv = st.get("advanced_limit_from_api")
+    if adv is not None:
+        try:
+            cap = min(cap, int(adv))
+        except (TypeError, ValueError):
+            pass
+    return cap
 
 
 def set_remaining(acc_id, remaining, advanced=None):
