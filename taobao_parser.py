@@ -532,43 +532,10 @@ def run_parser(product_url, progress_callback=None, sku_order=None):
                     'name_cn': original_name
                 })
 
-    # --- Авто-порядок по странице: главный атрибут «颜色分类» (Классификация цветов)
-    # содержит список вариантов в том порядке, как они идут на странице Taobao.
-    # Поле «Порядок артикулов» в web_app становится необязательным.
-    def _apply_page_order(skus, attributes):
-        master = None
-        for attr in attributes:
-            if attr.get("IsConfigurator"):
-                continue
-            pid = str(attr.get("Pid", ""))
-            prop = str(attr.get("PropertyName", ""))
-            if pid in ("颜色分类", "Классификация цветов") or prop in ("颜色分类", "Классификация цветов"):
-                val = attr.get("OriginalValue") or attr.get("Value") or ""
-                if len(val.split()) >= 2:
-                    master = val
-                    break
-        if not master:
-            return skus
-        master_norm = re.sub(r'[\s（）()【\[\]】]', '', master)
-        positions = []
-        for sku in skus:
-            key = re.sub(r'[\s（）()【\[\]】]', '', sku.get('name_cn', ''))
-            positions.append(master_norm.find(key) if key else -1)
-        # Сортировка по атрибуту допустима только когда она однозначна:
-        # все артикулы найдены и позиции различаются. Иначе перемешала бы порядок
-        # магазина (у разных вариантов бывает одна и та же позиция в строке).
-        if any(p < 0 for p in positions) or len(set(positions)) != len(positions):
-            log("📋 Порядок артикулов — как в магазине Taobao (из API)")
-            return skus
-        for sku, pos in zip(skus, positions):
-            sku['_page_pos'] = pos
-        skus.sort(key=lambda s: s['_page_pos'])
-        for sku in skus:
-            sku.pop('_page_pos', None)
-        log("📋 Порядок артикулов по странице (颜色分类) применён")
-        return skus
-
-    real_skus = _apply_page_order(real_skus, all_attributes)
+    # Порядок артикулов — строго как отдаёт API (он же порядок магазина Taobao).
+    # Сортировка по атрибуту «颜色分类» не применяется (указание владельца 31.10.2026):
+    # она перемешивала артикулы, когда у разных вариантов совпадала позиция в строке.
+    log("📋 Порядок артикулов — как в магазине Taobao (из API)")
 
     # Сортировка по порядку магазина (если передан sku_order — список названий из выпадающего списка Taobao)
     if sku_order:
