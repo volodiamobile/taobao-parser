@@ -10,10 +10,15 @@
   rapidapi_accounts.json      — список аккаунтов (id, label, key, limit, period, enabled)
   _usage/rapidapi_usage.json  — счётчики (used, quota_remaining из заголовков, period_start)
 
-Логика лимита:
-  остаток = min(limit - used, quota_remaining)   # quota_remaining приходит от RapidAPI
-  Если RapidAPI прислал заголовки x-ratelimit-requests-limit / -remaining,
-  они имеют приоритет: остаток синхронизируется с реальным состоянием тарифа.
+Логика лимита (проверено 31.10.2026 живым запросом):
+  У тарифа RapidAPI ДВА счётчика на сутки:
+    Requests          20/сутки   (x-ratelimit-requests-limit/-remaining)
+    Advanced requests 10/сутки   (x-ratelimit-advanced-requests-limit/-remaining)
+  Один вызов BatchGetItemFullInfo списывает по 1 из КАЖДОГО счётчика, поэтому
+  связывающим является advanced: реальная ёмкость ключа = 10 вызовов в сутки.
+  остаток = min(limit - used, requests_remaining, advanced_remaining)
+  Значения из заголовков приходят УЖЕ после списания текущего запроса, поэтому
+  повторно уменьшать их на 1 нельзя (иначе счётчик уезжает на 1 вниз за вызов).
 
 CLI:
   python api_pool.py status                       # таблица аккаунтов и остатков
@@ -118,6 +123,8 @@ def _state_for(usage, acc):
             "used": 0,
             "quota_remaining": None,
             "limit_from_api": None,
+            "advanced_remaining": None,
+            "advanced_limit_from_api": None,
             "last_status": None,
             "last_call": None,
         }
@@ -138,12 +145,13 @@ def remaining_of(acc, st):
     """Сколько запросов ещё доступно у аккаунта в текущем периоде."""
     lim = _limit_of(acc, st)
     rest = lim - int(st.get("used") or 0)
-    qr = st.get("quota_remaining")
-    if qr is not None:
-        try:
-            rest = min(rest, int(qr))
-        except (TypeError, ValueError):
-            pass
+    for key in ("quota_remaining", "advanced_remaining"):
+        val = st.get(key)
+        if val is not None:
+            try:
+                rest = min(rest, int(val))
+            except (TypeError, ValueError):
+                pass
     return max(0, rest)
 
 
@@ -203,26 +211,36 @@ def record_call(acc_id, status=None, headers=None, exhausted=False, count=True):
         st["geo_blocked"] = True
     elif count:
         st["geo_blocked"] = False
+    synced = {"quota_remaining": False, "advanced_remaining": False}
     if headers:
         h = {str(k).lower(): v for k, v in dict(headers).items()}
-        lim = h.get("x-ratelimit-requests-limit")
-        rem = h.get("x-ratelimit-requests-remaining")
-        try:
-            if lim not in (None, ""):
-                st["limit_from_api"] = int(lim)
-        except (TypeError, ValueError):
-            pass
-        try:
-            if rem not in (None, ""):
-                st["quota_remaining"] = int(rem)
-        except (TypeError, ValueError):
-            pass
+        for src, dst_lim, dst_rem in (
+                ("requests", "limit_from_api", "quota_remaining"),
+                ("advanced-requests", "advanced_limit_from_api", "advanced_remaining")):
+            lim = h.get(f"x-ratelimit-{src}-limit")
+            rem = h.get(f"x-ratelimit-{src}-remaining")
+            try:
+                if lim not in (None, ""):
+                    st[dst_lim] = int(lim)
+            except (TypeError, ValueError):
+                pass
+            try:
+                if rem not in (None, ""):
+                    st[dst_rem] = int(rem)
+                    synced[dst_rem] = True   # заголовок уже учитывает текущий запрос
+            except (TypeError, ValueError):
+                pass
         if h.get("x-ratelimit-requests-reset"):
             st["reset_at"] = str(h["x-ratelimit-requests-reset"])
     if exhausted:
         st["quota_remaining"] = 0
-    elif count and st.get("quota_remaining") is not None:
-        st["quota_remaining"] = max(0, int(st["quota_remaining"]) - 1)
+        st["advanced_remaining"] = 0
+    elif count:
+        for dst, was_synced in synced.items():
+            if was_synced:
+                continue
+            if st.get(dst) is not None:
+                st[dst] = max(0, int(st[dst]) - 1)
     save_usage(usage)
 
 
@@ -249,7 +267,7 @@ def remaining_for(acc_id):
     return remaining_of(acc, _state_for(usage, acc))
 
 
-def set_remaining(acc_id, remaining):
+def set_remaining(acc_id, remaining, advanced=None):
     accounts = load_accounts()
     usage = load_usage()
     acc = next((a for a in accounts["accounts"] if a.get("id") == acc_id), None)
@@ -257,6 +275,8 @@ def set_remaining(acc_id, remaining):
         raise SystemExit(f"Аккаунт {acc_id} не найден")
     st = _state_for(usage, acc)
     st["quota_remaining"] = max(0, int(remaining))
+    if advanced is not None:
+        st["advanced_remaining"] = max(0, int(advanced))
     save_usage(usage)
 
 
@@ -334,8 +354,10 @@ def cmd_status():
         state = "ок" if acc.get("enabled", True) else "выключен"
         if acc.get("enabled", True) and rest <= 0:
             state = "исчерпан"
+        adv = st.get("advanced_remaining")
+        adv_txt = "?" if adv is None else str(adv)
         print(f"{acc['id']:<8}{(acc.get('label') or '')[:15]:<16}{(acc.get('period') or DEFAULT_PERIOD):<8}"
-              f"{int(st.get('used') or 0):>6}{lim:>7}{rest:>9}  {state}")
+              f"{int(st.get('used') or 0):>6}{lim:>7}{rest:>9}  advanced {adv_txt}/10  {state}")
     print(f"\nВсего доступно запросов: {total_rest}")
     tips = usage.get("accounts", {})
     last = max((s.get("last_call") or "" for s in tips.values()), default="")
@@ -408,10 +430,12 @@ def main(argv):
         return 0
     if cmd == "sync":
         if not opts.get("id") or opts.get("remaining") is None:
-            print("Нужно: sync --id <acc> --remaining <N>")
+            print("Нужно: sync --id <acc> --remaining <N> [--advanced <M>]")
             return 2
-        set_remaining(opts["id"], int(opts["remaining"]))
-        print(f"Остаток {opts['id']} установлен: {opts['remaining']}")
+        adv = None if opts.get("advanced") in (None, True) else int(opts["advanced"])
+        set_remaining(opts["id"], int(opts["remaining"]), advanced=adv)
+        tail = f", advanced {adv}" if adv is not None else ""
+        print(f"Остаток {opts['id']} установлен: {opts['remaining']}{tail}")
         return 0
     print(f"Неизвестная команда: {cmd}")
     return 2
