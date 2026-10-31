@@ -183,25 +183,20 @@ def _clean_sku_name(text):
 
 
 def _price_cny(obj, default=0):
-    """Цена товара в юанях.
+    """Цена в юанях — сразу из OriginalPrice.
 
-    RapidAPI конвертирует цену в валюту по геолокации запроса (через прокси США приходит USD:
-    вариант 1450 CNY → 184.86 USD), а мы выводим цену как ¥. Поэтому сначала берём
-    OriginalPrice при OriginalCurrencyCode = CNY, а ConvertedPriceList — только как запасной вариант.
+    ConvertedPriceList не используется вообще (указание владельца 31.10.2026): RapidAPI
+    конвертирует по геолокации запроса (через прокси США приходит USD: вариант 1450 CNY →
+    184.86 USD), а цена нужна в юанях как есть.
     """
     if not isinstance(obj, dict):
         return default
-    code = str(obj.get("OriginalCurrencyCode") or "").upper()
     orig = obj.get("OriginalPrice")
-    if code == "CNY" and orig not in (None, ""):
-        try:
-            return float(orig)
-        except (TypeError, ValueError):
-            pass
+    if orig in (None, ""):
+        return default
     try:
-        val = obj.get("ConvertedPriceList", {}).get("Internal", {}).get("Price")
-        return float(val) if val not in (None, "") else default
-    except (TypeError, ValueError, AttributeError):
+        return float(orig)
+    except (TypeError, ValueError):
         return default
 
 
