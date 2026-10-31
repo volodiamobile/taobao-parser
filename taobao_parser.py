@@ -183,6 +183,45 @@ def _lc_first(text):
     return text
 
 
+QUOTA_PROBE_ITEM = "744893547496"   # любой существующий товар: нужен только ответ с заголовками
+
+
+def check_quota(acc_ids=None):
+    """Реальные цифры квоты из заголовков RapidAPI. Один запрос на аккаунт (спишет 1 обычный + 1 advanced)."""
+    if _pool is None:
+        return {}
+    url = "https://taobao-tmall1.p.rapidapi.com/BatchGetItemFullInfo"
+    accounts = [a for a in _pool.load_accounts()["accounts"] if a.get("enabled", True)]
+    by_id = {a["id"]: a for a in accounts}
+    if acc_ids is None:
+        acc, _st = _pool.pick_account(need=1)
+        acc_ids = [acc["id"]] if acc else []
+    out = {}
+    for aid in acc_ids:
+        acc = by_id.get(aid)
+        if not acc:
+            out[aid] = {"error": "аккаунт не найден"}
+            continue
+        headers = {"x-rapidapi-key": acc["key"].strip(), "x-rapidapi-host": RAPIDAPI_HOST}
+        try:
+            resp = requests.get(url, headers=headers,
+                                params={"itemId": QUOTA_PROBE_ITEM, "language": "ru"},
+                                timeout=30, proxies=_pool_proxy())
+        except Exception as exc:
+            out[aid] = {"error": str(exc)[:200]}
+            continue
+        counted = resp.status_code not in (0, 401, 403, 407, 451)
+        _pool_record(aid, resp.status_code, resp.headers, exhausted=(resp.status_code == 429), count=counted)
+        h = {str(k).lower(): v for k, v in resp.headers.items()}
+        out[aid] = {
+            "status": resp.status_code,
+            "requests": h.get("x-ratelimit-requests-remaining"),
+            "advanced": h.get("x-ratelimit-advanced-requests-remaining"),
+            "reset": h.get("x-ratelimit-requests-reset"),
+        }
+    return out
+
+
 def sanitize_filename(name):
     forbidden = '<>:"/\\|?*'
     for char in forbidden:
@@ -511,10 +550,18 @@ def run_parser(product_url, progress_callback=None, sku_order=None):
         if not master:
             return skus
         master_norm = re.sub(r'[\s（）()【\[\]】]', '', master)
+        positions = []
         for sku in skus:
             key = re.sub(r'[\s（）()【\[\]】]', '', sku.get('name_cn', ''))
-            pos = master_norm.find(key) if key else -1
-            sku['_page_pos'] = pos if pos >= 0 else 10 ** 9
+            positions.append(master_norm.find(key) if key else -1)
+        # Сортировка по атрибуту допустима только когда она однозначна:
+        # все артикулы найдены и позиции различаются. Иначе перемешала бы порядок
+        # магазина (у разных вариантов бывает одна и та же позиция в строке).
+        if any(p < 0 for p in positions) or len(set(positions)) != len(positions):
+            log("📋 Порядок артикулов — как в магазине Taobao (из API)")
+            return skus
+        for sku, pos in zip(skus, positions):
+            sku['_page_pos'] = pos
         skus.sort(key=lambda s: s['_page_pos'])
         for sku in skus:
             sku.pop('_page_pos', None)

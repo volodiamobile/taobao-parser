@@ -46,6 +46,31 @@ except Exception:
     pass
 
 
+# --- Проверка реального остатка (один запрос на ключ) ---
+if st.sidebar.button("🔄 Проверить остаток"):
+    try:
+        import api_pool as _ap
+        import taobao_parser as _tp
+        _ids = None
+        if st.session_state.get("quota_all"):
+            _ids = [a["id"] for a in _ap.load_accounts()["accounts"] if a.get("enabled", True)]
+        with st.spinner("Запрос к RapidAPI..."):
+            st.session_state["quota_check"] = _tp.check_quota(_ids)
+        st.rerun()
+    except Exception as _e:
+        st.sidebar.error(f"Проверка не удалась: {_e}")
+
+st.sidebar.checkbox("Проверить все ключи (1 запрос на ключ)", key="quota_all", value=False)
+
+_qc = st.session_state.get("quota_check")
+if _qc:
+    for _aid, _r in _qc.items():
+        if _r.get("error"):
+            st.sidebar.caption(f"{_aid}: ошибка — {_r['error']}")
+        else:
+            st.sidebar.caption(f"{_aid}: HTTP {_r.get('status')}, requests {_r.get('requests')}, "
+                               f"advanced {_r.get('advanced')}")
+
 if st.sidebar.button("🚪 Выйти"):
     st.session_state.authenticated = False
     st.rerun()
